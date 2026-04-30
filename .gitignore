@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Node / Vite
+node_modules/
+dist/
+dist-ssr/
+*.local
+.npm
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.pid
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Alembic — keep migrations, ignore the lock if any
+# (we keep alembic/versions/)
+
+# Logs
+*.log
