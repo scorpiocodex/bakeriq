@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = Field(default_factory=list)
 
+    # Test database (separate from production db)
+    POSTGRES_TEST_HOST: str = "db_test"
+    POSTGRES_TEST_PORT: int = 5432
+    POSTGRES_TEST_USER: str = "bakeriq_test"
+    POSTGRES_TEST_PASSWORD: str = "bakeriq_test_password"
+    POSTGRES_TEST_DB: str = "bakeriq_test"
+
     @computed_field
     @property
     def DATABASE_URL(self) -> str:
@@ -51,6 +58,14 @@ class Settings(BaseSettings):
     @property
     def REDIS_URL(self) -> str:
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
+
+    @computed_field
+    @property
+    def TEST_DATABASE_URL(self) -> str:
+        return (
+            f"postgresql+psycopg2://{self.POSTGRES_TEST_USER}:{self.POSTGRES_TEST_PASSWORD}"
+            f"@{self.POSTGRES_TEST_HOST}:{self.POSTGRES_TEST_PORT}/{self.POSTGRES_TEST_DB}"
+        )
 
 
 @lru_cache
