@@ -46,6 +46,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      db_test:
+        condition: service_healthy
       redis:
         condition: service_healthy
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -66,6 +68,22 @@ services:
     depends_on:
       - api
     command: npm run dev -- --host 0.0.0.0
+
+  db_test:
+    image: postgres:15-alpine
+    container_name: bakeriq-db-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bakeriq_test
+      POSTGRES_PASSWORD: bakeriq_test_password
+      POSTGRES_DB: bakeriq_test
+    ports:
+      - "5433:5432"   # different host port to avoid clash with main db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bakeriq_test -d bakeriq_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   db_data:
