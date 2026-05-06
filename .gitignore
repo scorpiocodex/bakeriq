@@ -43,3 +43,7 @@ htmlcov/
 
 # Logs
 *.log
+# Type checker caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
