@@ -14,21 +14,21 @@ import client from './client';
 /**
  * GET /customers — paginated, filterable list.
  *
- * Returns: { items, total, skip, limit }
+ * status: 'active' (default) | 'inactive' | 'all'
+ *   - 'active': only active customers
+ *   - 'inactive': only deactivated customers
+ *   - 'all': both
  *
- * Why we build params manually instead of passing the whole filter object:
- * axios serialises {search: null} as ?search= (empty string), which the
- * backend would interpret as "name contains empty string" — matching every
- * row. Omitting null params entirely is the cleaner contract.
+ * Returns: { items, total, skip, limit }
  */
 export async function listCustomers({
     skip = 0,
     limit = 50,
     search = null,
     whatsappOnly = null,
-    includeInactive = false,
+    status = 'active',
 } = {}) {
-    const params = { skip, limit, include_inactive: includeInactive };
+    const params = { skip, limit, status };
     if (search) params.search = search;
     if (whatsappOnly !== null) params.whatsapp_only = whatsappOnly;
 

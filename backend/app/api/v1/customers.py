@@ -33,17 +33,27 @@ def list_customers(
     limit: int = Query(50, ge=1, le=200),
     search: str | None = Query(None, max_length=100),
     whatsapp_only: bool | None = None,
-    include_inactive: bool = False,
+    status: str = Query("active", pattern="^(active|inactive|all)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """List customers with pagination and filters.
+
+    status query parameter:
+      - 'active' (default): only active customers
+      - 'inactive': only deactivated customers
+      - 'all': both
+
+    Pattern validation in Query() ensures FastAPI returns 422 for typos
+    rather than silently falling through to the service-layer default.
+    """
     items, total = customer_service.list_customers(
         db,
         skip=skip,
         limit=limit,
         search=search,
         whatsapp_only=whatsapp_only,
-        include_inactive=include_inactive,
+        status=status,
     )
     return CustomerListResponse(
         items=[CustomerOut.model_validate(c) for c in items],

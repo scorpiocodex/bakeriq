@@ -81,13 +81,34 @@ def list_customers(
     limit: int = 50,
     search: str | None = None,
     whatsapp_only: bool | None = None,
-    include_inactive: bool = False,
+    status: str = "active",
 ) -> tuple[list[Customer], int]:
-    """List with pagination + filters. Returns (items, total)."""
+    """List with pagination + filters. Returns (items, total).
+
+    status filter takes three values:
+      - "active"   (default): only is_active=True  customers
+      - "inactive": only is_active=False customers
+      - "all":     both
+
+    Replaces the previous include_inactive boolean which couldn't express
+    "only inactive" — see commit message for the full reasoning.
+    """
     query = select(Customer)
     count_query = select(Customer)
 
-    if not include_inactive:
+    # Status filter — three discrete states
+    if status == "active":
+        query = query.where(Customer.is_active == True)
+        count_query = count_query.where(Customer.is_active == True)
+    elif status == "inactive":
+        query = query.where(Customer.is_active == False)
+        count_query = count_query.where(Customer.is_active == False)
+    elif status == "all":
+        # No filter on is_active — show every customer
+        pass
+    else:
+        # Defensive fallback — shouldn't happen if API validates the enum,
+        # but if a bad value reaches the service we default to safe (active only)
         query = query.where(Customer.is_active == True)
         count_query = count_query.where(Customer.is_active == True)
 

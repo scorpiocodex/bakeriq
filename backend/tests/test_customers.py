@@ -11,8 +11,8 @@ Coverage:
 
 Total: 17 tests.
 """
-import pytest
 
+import pytest
 
 # Default payload used across most tests. Includes all required fields
 # (name, primary_phone, address_line_1, city, state, pincode) plus a few
@@ -34,6 +34,7 @@ CUSTOMER_PAYLOAD = {
 
 
 # === CREATE ===
+
 
 def test_create_customer_returns_201(client, auth_headers):
     r = client.post("/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers)
@@ -90,12 +91,15 @@ def test_create_customer_requires_auth(client):
 
 # === PINCODE VALIDATION ===
 
+
 def test_create_customer_rejects_bad_pincode(client, auth_headers):
     """5 digits, 7 digits, alphabetic — all should fail the ^\\d{6}$ regex."""
     for bad_pin in ["12345", "1234567", "abc123", "68200a"]:
         payload = {**CUSTOMER_PAYLOAD, "pincode": bad_pin}
         r = client.post("/api/v1/customers", json=payload, headers=auth_headers)
-        assert r.status_code == 422, f"Expected 422 for pincode '{bad_pin}', got {r.status_code}"
+        assert (
+            r.status_code == 422
+        ), f"Expected 422 for pincode '{bad_pin}', got {r.status_code}"
 
 
 def test_create_customer_normalises_pincode_whitespace(client, auth_headers):
@@ -107,6 +111,7 @@ def test_create_customer_normalises_pincode_whitespace(client, auth_headers):
 
 
 # === LIST ===
+
 
 def test_list_customers_empty(client, auth_headers):
     r = client.get("/api/v1/customers", headers=auth_headers)
@@ -133,21 +138,99 @@ def test_list_customers_returns_paginated_results(client, auth_headers):
 
 
 def test_list_customers_filters_inactive_by_default(client, auth_headers):
-    create = client.post("/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers)
+    """Default behaviour: deactivated customers don't show up."""
+    create = client.post(
+        "/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers
+    )
     customer_id = create.json()["id"]
     client.delete(f"/api/v1/customers/{customer_id}", headers=auth_headers)
 
+    # No status param — default is 'active'
     r = client.get("/api/v1/customers", headers=auth_headers)
     assert r.json()["total"] == 0
 
-    r = client.get("/api/v1/customers?include_inactive=true", headers=auth_headers)
-    assert r.json()["total"] == 1
+
+def test_list_customers_status_inactive_returns_only_inactive(client, auth_headers):
+    """status=inactive returns ONLY deactivated customers."""
+    # Create an active customer
+    active = client.post(
+        "/api/v1/customers",
+        json={
+            **CUSTOMER_PAYLOAD,
+            "name": "Active One",
+            "primary_phone": "+919999911111",
+            "secondary_phone": None,
+        },
+        headers=auth_headers,
+    )
+    # Create another and deactivate it
+    inactive = client.post(
+        "/api/v1/customers",
+        json={
+            **CUSTOMER_PAYLOAD,
+            "name": "Inactive One",
+            "primary_phone": "+919999922222",
+            "secondary_phone": None,
+        },
+        headers=auth_headers,
+    )
+    client.delete(f"/api/v1/customers/{inactive.json()['id']}", headers=auth_headers)
+
+    r = client.get("/api/v1/customers?status=inactive", headers=auth_headers)
+    body = r.json()
+    assert body["total"] == 1
+    assert body["items"][0]["name"] == "Inactive One"
+    assert body["items"][0]["is_active"] is False
+
+
+def test_list_customers_status_all_returns_both(client, auth_headers):
+    """status=all returns active AND inactive customers."""
+    active = client.post(
+        "/api/v1/customers",
+        json={
+            **CUSTOMER_PAYLOAD,
+            "name": "Active One",
+            "primary_phone": "+919999911111",
+            "secondary_phone": None,
+        },
+        headers=auth_headers,
+    )
+    inactive = client.post(
+        "/api/v1/customers",
+        json={
+            **CUSTOMER_PAYLOAD,
+            "name": "Inactive One",
+            "primary_phone": "+919999922222",
+            "secondary_phone": None,
+        },
+        headers=auth_headers,
+    )
+    client.delete(f"/api/v1/customers/{inactive.json()['id']}", headers=auth_headers)
+
+    r = client.get("/api/v1/customers?status=all", headers=auth_headers)
+    assert r.json()["total"] == 2
+
+
+def test_list_customers_rejects_invalid_status(client, auth_headers):
+    """status=foo returns 422 thanks to the Query pattern validation."""
+    r = client.get("/api/v1/customers?status=foo", headers=auth_headers)
+    assert r.status_code == 422
 
 
 def test_list_customers_search_by_name(client, auth_headers):
     payloads = [
-        {**CUSTOMER_PAYLOAD, "name": "Anita Menon", "primary_phone": "+919999912345", "secondary_phone": None},
-        {**CUSTOMER_PAYLOAD, "name": "Ravi Kumar", "primary_phone": "+919999923456", "secondary_phone": None},
+        {
+            **CUSTOMER_PAYLOAD,
+            "name": "Anita Menon",
+            "primary_phone": "+919999912345",
+            "secondary_phone": None,
+        },
+        {
+            **CUSTOMER_PAYLOAD,
+            "name": "Ravi Kumar",
+            "primary_phone": "+919999923456",
+            "secondary_phone": None,
+        },
     ]
     for p in payloads:
         client.post("/api/v1/customers", json=p, headers=auth_headers)
@@ -160,8 +243,11 @@ def test_list_customers_search_by_name(client, auth_headers):
 
 # === GET ===
 
+
 def test_get_customer_returns_existing(client, auth_headers):
-    create = client.post("/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers)
+    create = client.post(
+        "/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers
+    )
     customer_id = create.json()["id"]
 
     r = client.get(f"/api/v1/customers/{customer_id}", headers=auth_headers)
@@ -177,8 +263,11 @@ def test_get_customer_returns_404_for_nonexistent(client, auth_headers):
 
 # === UPDATE ===
 
+
 def test_update_customer_partial(client, auth_headers):
-    create = client.post("/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers)
+    create = client.post(
+        "/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers
+    )
     customer_id = create.json()["id"]
 
     r = client.put(
@@ -214,8 +303,11 @@ def test_update_customer_rejects_phone_collision(client, auth_headers):
 
 # === DELETE (soft) ===
 
+
 def test_deactivate_customer_sets_is_active_false(client, auth_headers):
-    create = client.post("/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers)
+    create = client.post(
+        "/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers
+    )
     customer_id = create.json()["id"]
 
     r = client.delete(f"/api/v1/customers/{customer_id}", headers=auth_headers)

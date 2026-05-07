@@ -36,21 +36,23 @@ const FILTERS = [
 ];
 
 // Translates the chip selection into API filter params.
-// Centralised so the page body doesn't have nested switches.
+//
+// "All" chip means "all active customers" (NOT "everything including inactive")
+// because that's what the user expects from a default view. The Inactive chip
+// is the only path to seeing deactivated customers.
 function buildFilterParams(filterKey) {
     switch (filterKey) {
         case 'whatsapp':
-            return { whatsappOnly: true, includeInactive: false };
+            return { whatsappOnly: true, status: 'active' };
         case 'voice':
-            return { whatsappOnly: false, includeInactive: false };
+            return { whatsappOnly: false, status: 'active' };
         case 'inactive':
-            return { whatsappOnly: null, includeInactive: true };
+            return { whatsappOnly: null, status: 'inactive' };
         case 'all':
         default:
-            return { whatsappOnly: null, includeInactive: false };
+            return { whatsappOnly: null, status: 'active' };
     }
 }
-
 // Customer initials for the avatar circle. Same logic as TopBar's
 // initials helper. Could be extracted to a shared util later.
 function getInitials(name) {
@@ -170,8 +172,8 @@ export default function Customers() {
                             key={f.key}
                             onClick={() => setActiveFilter(f.key)}
                             className={`text-xs px-3 py-1 rounded-full border ${activeFilter === f.key
-                                    ? 'bg-brand-50 text-brand-700 border-brand-300 font-medium'
-                                    : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+                                ? 'bg-brand-50 text-brand-700 border-brand-300 font-medium'
+                                : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
                                 }`}
                         >
                             {f.label}
