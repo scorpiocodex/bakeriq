@@ -1,20 +1,39 @@
-"""Customer endpoint tests — Medium rigor."""
+"""Customer endpoint tests — Medium rigor.
 
+Coverage:
+  Create (6 tests): success, phone normalisation, bad phone, duplicate
+    phone, cross-column phone uniqueness, auth required
+  Pincode (2 tests): bad PIN format rejected, PIN whitespace normalised
+  List (4 tests): empty, paginated, inactive filtering, search by name
+  Get (2 tests): existing, 404
+  Update (2 tests): partial update, phone collision rejected
+  Delete (1 test): soft delete sets is_active=false
+
+Total: 17 tests.
+"""
 import pytest
 
+
+# Default payload used across most tests. Includes all required fields
+# (name, primary_phone, address_line_1, city, state, pincode) plus a few
+# optional ones (secondary_phone, address_line_2, whatsapp_enabled).
+# Test placeholder per the agreed convention — not a real address.
 CUSTOMER_PAYLOAD = {
     "name": "Anita Menon",
     "primary_phone": "+919999912345",
     "secondary_phone": "+919999900001",
     "preferred_channel_phone": "primary",
     "whatsapp_enabled": True,
-    "address": "Pattom",
+    "address_line_1": "Test Bakery",
+    "address_line_2": "Test Street",
+    "city": "Kochi",
+    "state": "Kerala",
+    "pincode": "682001",
     "notes": "Daily customer",
 }
 
 
 # === CREATE ===
-
 
 def test_create_customer_returns_201(client, auth_headers):
     r = client.post("/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers)
@@ -22,6 +41,10 @@ def test_create_customer_returns_201(client, auth_headers):
     body = r.json()
     assert body["name"] == "Anita Menon"
     assert body["primary_phone"] == "+919999912345"
+    assert body["address_line_1"] == "Test Bakery"
+    assert body["city"] == "Kochi"
+    assert body["state"] == "Kerala"
+    assert body["pincode"] == "682001"
     assert body["is_active"] is True
     assert "id" in body
 
@@ -65,8 +88,25 @@ def test_create_customer_requires_auth(client):
     assert r.status_code == 401
 
 
-# === LIST ===
+# === PINCODE VALIDATION ===
 
+def test_create_customer_rejects_bad_pincode(client, auth_headers):
+    """5 digits, 7 digits, alphabetic — all should fail the ^\\d{6}$ regex."""
+    for bad_pin in ["12345", "1234567", "abc123", "68200a"]:
+        payload = {**CUSTOMER_PAYLOAD, "pincode": bad_pin}
+        r = client.post("/api/v1/customers", json=payload, headers=auth_headers)
+        assert r.status_code == 422, f"Expected 422 for pincode '{bad_pin}', got {r.status_code}"
+
+
+def test_create_customer_normalises_pincode_whitespace(client, auth_headers):
+    """User pastes '682 314' from somewhere — backend strips space, accepts it."""
+    payload = {**CUSTOMER_PAYLOAD, "pincode": "682 314"}
+    r = client.post("/api/v1/customers", json=payload, headers=auth_headers)
+    assert r.status_code == 201
+    assert r.json()["pincode"] == "682314"
+
+
+# === LIST ===
 
 def test_list_customers_empty(client, auth_headers):
     r = client.get("/api/v1/customers", headers=auth_headers)
@@ -93,9 +133,7 @@ def test_list_customers_returns_paginated_results(client, auth_headers):
 
 
 def test_list_customers_filters_inactive_by_default(client, auth_headers):
-    create = client.post(
-        "/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers
-    )
+    create = client.post("/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers)
     customer_id = create.json()["id"]
     client.delete(f"/api/v1/customers/{customer_id}", headers=auth_headers)
 
@@ -108,18 +146,8 @@ def test_list_customers_filters_inactive_by_default(client, auth_headers):
 
 def test_list_customers_search_by_name(client, auth_headers):
     payloads = [
-        {
-            **CUSTOMER_PAYLOAD,
-            "name": "Anita Menon",
-            "primary_phone": "+919999912345",
-            "secondary_phone": None,
-        },
-        {
-            **CUSTOMER_PAYLOAD,
-            "name": "Ravi Kumar",
-            "primary_phone": "+919999923456",
-            "secondary_phone": None,
-        },
+        {**CUSTOMER_PAYLOAD, "name": "Anita Menon", "primary_phone": "+919999912345", "secondary_phone": None},
+        {**CUSTOMER_PAYLOAD, "name": "Ravi Kumar", "primary_phone": "+919999923456", "secondary_phone": None},
     ]
     for p in payloads:
         client.post("/api/v1/customers", json=p, headers=auth_headers)
@@ -132,11 +160,8 @@ def test_list_customers_search_by_name(client, auth_headers):
 
 # === GET ===
 
-
 def test_get_customer_returns_existing(client, auth_headers):
-    create = client.post(
-        "/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers
-    )
+    create = client.post("/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers)
     customer_id = create.json()["id"]
 
     r = client.get(f"/api/v1/customers/{customer_id}", headers=auth_headers)
@@ -152,11 +177,8 @@ def test_get_customer_returns_404_for_nonexistent(client, auth_headers):
 
 # === UPDATE ===
 
-
 def test_update_customer_partial(client, auth_headers):
-    create = client.post(
-        "/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers
-    )
+    create = client.post("/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers)
     customer_id = create.json()["id"]
 
     r = client.put(
@@ -168,6 +190,7 @@ def test_update_customer_partial(client, auth_headers):
     body = r.json()
     assert body["notes"] == "Updated notes"
     assert body["name"] == "Anita Menon"  # unchanged
+    assert body["pincode"] == "682001"  # unchanged
 
 
 def test_update_customer_rejects_phone_collision(client, auth_headers):
@@ -191,11 +214,8 @@ def test_update_customer_rejects_phone_collision(client, auth_headers):
 
 # === DELETE (soft) ===
 
-
 def test_deactivate_customer_sets_is_active_false(client, auth_headers):
-    create = client.post(
-        "/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers
-    )
+    create = client.post("/api/v1/customers", json=CUSTOMER_PAYLOAD, headers=auth_headers)
     customer_id = create.json()["id"]
 
     r = client.delete(f"/api/v1/customers/{customer_id}", headers=auth_headers)

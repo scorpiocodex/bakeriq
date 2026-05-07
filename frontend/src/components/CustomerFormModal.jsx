@@ -5,11 +5,12 @@
  *   mode="create" — empty form, calls useCreateCustomer on submit
  *   mode="edit"   — pre-filled with customer data, calls useUpdateCustomer
  *
- * Why one component for both modes:
- *   The form fields are identical. The only differences (modal title,
- *   submit button label, which mutation to call) are easily handled with
- *   conditional logic. Splitting into two components would mean duplicating
- *   ~200 lines of form markup.
+ * Layout: two visual sections separated by a labelled divider:
+ *   1. Contact info (name, phones, preferences, WhatsApp toggle)
+ *   2. Address (5 fields in Indian postal format)
+ *   3. Notes
+ *
+ * The sectioning is purely visual — internally it's still one form.
  */
 import { useEffect, useState } from 'react';
 import { useCreateCustomer, useUpdateCustomer } from '../hooks/useCustomers';
@@ -22,7 +23,11 @@ const EMPTY_FORM = {
     secondary_phone: '',
     preferred_channel_phone: 'primary',
     whatsapp_enabled: false,
-    address: '',
+    address_line_1: '',
+    address_line_2: '',
+    city: '',
+    state: 'Kerala', // Default for the bakery's home state — saves typing in 95% of cases
+    pincode: '',
     notes: '',
 };
 
@@ -32,7 +37,6 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
 
     const createMut = useCreateCustomer();
     const updateMut = useUpdateCustomer();
-    // isPending (not isLoading) — TanStack v5 uses isPending for mutations
     const isSubmitting = createMut.isPending || updateMut.isPending;
 
     // Pre-fill the form when entering edit mode; reset when entering create mode.
@@ -48,7 +52,11 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
                 secondary_phone: customer.secondary_phone ?? '',
                 preferred_channel_phone: customer.preferred_channel_phone ?? 'primary',
                 whatsapp_enabled: customer.whatsapp_enabled ?? false,
-                address: customer.address ?? '',
+                address_line_1: customer.address_line_1 ?? '',
+                address_line_2: customer.address_line_2 ?? '',
+                city: customer.city ?? '',
+                state: customer.state ?? 'Kerala',
+                pincode: customer.pincode ?? '',
                 notes: customer.notes ?? '',
             });
         } else {
@@ -57,9 +65,6 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
         setError('');
     }, [open, mode, customer]);
 
-    // Important: we render NOTHING when not open. Without this guard, the
-    // modal markup would always be in the DOM (just hidden via CSS). That
-    // wastes render cycles and means inputs hold stale state between sessions.
     if (!open) return null;
 
     function handleChange(field, value) {
@@ -70,18 +75,21 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
         e.preventDefault();
         setError('');
 
-        // Build the payload from form state. Two notable transformations:
-        //   1. .trim() — remove accidental leading/trailing whitespace
-        //   2. Drop empty optional fields entirely so the backend stores
-        //      null instead of empty string ""
+        // Build the payload from form state. Required fields go in directly;
+        // optional fields are dropped entirely if blank, so the backend stores
+        // null rather than empty string "".
         const payload = {
             name: form.name.trim(),
             primary_phone: form.primary_phone.trim(),
             preferred_channel_phone: form.preferred_channel_phone,
             whatsapp_enabled: form.whatsapp_enabled,
+            address_line_1: form.address_line_1.trim(),
+            city: form.city.trim(),
+            state: form.state.trim(),
+            pincode: form.pincode.trim(),
         };
         if (form.secondary_phone.trim()) payload.secondary_phone = form.secondary_phone.trim();
-        if (form.address.trim()) payload.address = form.address.trim();
+        if (form.address_line_2.trim()) payload.address_line_2 = form.address_line_2.trim();
         if (form.notes.trim()) payload.notes = form.notes.trim();
 
         try {
@@ -92,11 +100,11 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
             }
             onClose();
         } catch (err) {
-            // FastAPI puts the user-facing error message in response.data.detail
-            // For a 409 conflict it's "Phone number +91... is already used by another customer"
-            // For a 422 validation error it's an array; fall back to a generic message
+            // FastAPI puts the user-facing error message in response.data.detail.
+            // For 409 it's a string; for 422 it's an array of error objects.
+            // Fall back to a generic message for the array case.
             const detail = err.response?.data?.detail;
-            setError(typeof detail === 'string' ? detail : 'Could not save customer. Please try again.');
+            setError(typeof detail === 'string' ? detail : 'Could not save customer. Please check the form and try again.');
         }
     }
 
@@ -109,14 +117,14 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
             aria-labelledby="customer-modal-title"
         >
             {/*
-        stopPropagation on the form — clicking inside the form shouldn't
-        bubble up to the backdrop's onClose handler.
-        Standard modal pattern: outside-click closes, inside-click doesn't.
+        Wider modal (max-w-lg vs original max-w-md) to accommodate the
+        address grid. Also scrolls vertically if the form gets too tall
+        on small screens (max-h-[90vh] + overflow-y-auto).
       */}
             <form
                 onSubmit={handleSubmit}
                 onClick={(e) => e.stopPropagation()}
-                className="bg-white border border-slate-200 rounded-lg shadow-lg w-full max-w-md p-6"
+                className="bg-white border border-slate-200 rounded-lg shadow-lg w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto"
             >
                 {/* Header */}
                 <div className="flex items-center justify-between mb-4">
@@ -140,7 +148,12 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
                     </div>
                 )}
 
-                <div className="space-y-3">
+                {/* === Section 1: Contact info === */}
+                <div className="space-y-3 mb-5">
+                    <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
+                        Contact info
+                    </p>
+
                     {/* Name (required) */}
                     <div>
                         <label htmlFor="cf-name" className="block text-sm text-slate-700 mb-1">
@@ -190,7 +203,6 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
                     </div>
 
                     {/* Preferred phone — toggle between primary/secondary */}
-                    {/* Secondary button disabled when secondary_phone is empty */}
                     <div>
                         <label className="block text-sm text-slate-700 mb-1">
                             Preferred contact phone
@@ -200,8 +212,8 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
                                 type="button"
                                 onClick={() => handleChange('preferred_channel_phone', 'primary')}
                                 className={`flex-1 py-2 text-sm rounded-lg border ${form.preferred_channel_phone === 'primary'
-                                        ? 'bg-brand-50 text-brand-700 border-brand-300 font-medium'
-                                        : 'bg-white text-slate-600 border-slate-300'
+                                    ? 'bg-brand-50 text-brand-700 border-brand-300 font-medium'
+                                    : 'bg-white text-slate-600 border-slate-300'
                                     }`}
                             >
                                 Primary
@@ -211,8 +223,8 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
                                 onClick={() => handleChange('preferred_channel_phone', 'secondary')}
                                 disabled={!form.secondary_phone.trim()}
                                 className={`flex-1 py-2 text-sm rounded-lg border disabled:opacity-50 disabled:cursor-not-allowed ${form.preferred_channel_phone === 'secondary'
-                                        ? 'bg-brand-50 text-brand-700 border-brand-300 font-medium'
-                                        : 'bg-white text-slate-600 border-slate-300'
+                                    ? 'bg-brand-50 text-brand-700 border-brand-300 font-medium'
+                                    : 'bg-white text-slate-600 border-slate-300'
                                     }`}
                             >
                                 Secondary
@@ -231,40 +243,113 @@ export default function CustomerFormModal({ open, mode, customer, onClose }) {
                         <span className="text-sm text-slate-700">WhatsApp enabled</span>
                         <span className="text-xs text-slate-500">— bot will message instead of calling</span>
                     </label>
+                </div>
 
-                    {/* Address (optional) */}
+                {/* === Section 2: Address (5 fields in Indian postal format) === */}
+                <div className="space-y-3 mb-5 pt-4 border-t border-slate-200">
+                    <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
+                        Address
+                    </p>
+
+                    {/* Line 1 (required) */}
                     <div>
-                        <label htmlFor="cf-address" className="block text-sm text-slate-700 mb-1">
-                            Address <span className="text-slate-400">(optional)</span>
+                        <label htmlFor="cf-addr-1" className="block text-sm text-slate-700 mb-1">
+                            Address line 1 <span className="text-red-600">*</span>
                         </label>
                         <input
-                            id="cf-address"
+                            id="cf-addr-1"
                             type="text"
-                            value={form.address}
-                            onChange={(e) => handleChange('address', e.target.value)}
-                            placeholder="TC 14/789, Pattom"
+                            required
+                            value={form.address_line_1}
+                            onChange={(e) => handleChange('address_line_1', e.target.value)}
+                            placeholder="Building/house name, door number"
                             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-500"
                         />
                     </div>
 
-                    {/* Notes (optional) */}
+                    {/* Line 2 (optional) */}
                     <div>
-                        <label htmlFor="cf-notes" className="block text-sm text-slate-700 mb-1">
-                            Notes <span className="text-slate-400">(optional)</span>
+                        <label htmlFor="cf-addr-2" className="block text-sm text-slate-700 mb-1">
+                            Address line 2 <span className="text-slate-400">(optional)</span>
                         </label>
-                        <textarea
-                            id="cf-notes"
-                            rows={2}
-                            value={form.notes}
-                            onChange={(e) => handleChange('notes', e.target.value)}
-                            placeholder="Daily customer, prefers extra crispy puffs"
-                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-500 resize-none"
+                        <input
+                            id="cf-addr-2"
+                            type="text"
+                            value={form.address_line_2}
+                            onChange={(e) => handleChange('address_line_2', e.target.value)}
+                            placeholder="Post office, locality, landmark"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-500"
                         />
+                    </div>
+
+                    {/* City + State row — two-column grid for compactness */}
+                    <div className="grid grid-cols-2 gap-3">
+                        <div>
+                            <label htmlFor="cf-city" className="block text-sm text-slate-700 mb-1">
+                                City <span className="text-red-600">*</span>
+                            </label>
+                            <input
+                                id="cf-city"
+                                type="text"
+                                required
+                                value={form.city}
+                                onChange={(e) => handleChange('city', e.target.value)}
+                                placeholder="Ernakulam"
+                                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-500"
+                            />
+                        </div>
+                        <div>
+                            <label htmlFor="cf-state" className="block text-sm text-slate-700 mb-1">
+                                State <span className="text-red-600">*</span>
+                            </label>
+                            <input
+                                id="cf-state"
+                                type="text"
+                                required
+                                value={form.state}
+                                onChange={(e) => handleChange('state', e.target.value)}
+                                placeholder="Kerala"
+                                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-500"
+                            />
+                        </div>
+                    </div>
+
+                    {/* PIN code (required, 6 digits) */}
+                    <div>
+                        <label htmlFor="cf-pincode" className="block text-sm text-slate-700 mb-1">
+                            PIN code <span className="text-red-600">*</span>
+                        </label>
+                        <input
+                            id="cf-pincode"
+                            type="text"
+                            required
+                            value={form.pincode}
+                            onChange={(e) => handleChange('pincode', e.target.value)}
+                            placeholder="682001"
+                            maxLength={7}  /* allows space if user types "682 001"; backend strips it */
+                            inputMode="numeric"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-500 font-mono"
+                        />
+                        <p className="text-xs text-slate-500 mt-1">6 digits</p>
                     </div>
                 </div>
 
+                {/* === Section 3: Notes === */}
+                <div className="space-y-3 mb-5 pt-4 border-t border-slate-200">
+                    <p className="text-xs uppercase tracking-wide text-slate-500 font-medium">
+                        Notes
+                    </p>
+                    <textarea
+                        rows={2}
+                        value={form.notes}
+                        onChange={(e) => handleChange('notes', e.target.value)}
+                        placeholder="Daily customer, prefers extra crispy puffs"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-500 resize-none"
+                    />
+                </div>
+
                 {/* Footer with Cancel and Save buttons */}
-                <div className="flex gap-2 mt-5 pt-4 border-t border-slate-200">
+                <div className="flex gap-2 pt-4 border-t border-slate-200">
                     <button
                         type="button"
                         onClick={onClose}
