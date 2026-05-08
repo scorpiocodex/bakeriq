@@ -35,12 +35,13 @@ echo
 # relationships: child tables before parent tables. For now, just
 # customers. We deliberately do NOT clear the users table here —
 # that would log you out. Use `make reset-db` for that.
-run_with_spinner "Clearing existing customers" \
+# Clear in correct FK order: products reference categories, so products go first
+run_with_spinner "Clearing existing customers, products, categories" \
   docker compose exec -T db psql -U bakeriq -d bakeriq -c \
-  "DELETE FROM customers;"
+  "DELETE FROM products; DELETE FROM categories; DELETE FROM customers;"
 
-run_with_spinner "Inserting 8 customers" \
-  docker compose exec -T api python -m scripts.seed_phase_2_customers
+run_with_spinner "Inserting customers, categories, products" \
+  docker compose exec -T api python -m scripts.seed_phase_2
 
 customer_count=$(docker compose exec -T db psql -U bakeriq -d bakeriq -tAc \
   "SELECT count(*) FROM customers")

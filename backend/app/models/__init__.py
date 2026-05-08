@@ -1,5 +1,7 @@
 from app.models.base import Base
-from app.models.user import User
+from app.models.category import Category
 from app.models.customer import Customer, PreferredPhone
+from app.models.product import Product
+from app.models.user import User
 
-__all__ = ["Base", "User", "Customer", "PreferredPhone"]
+__all__ = ["Base", "User", "Customer", "PreferredPhone", "Product", "Category"]

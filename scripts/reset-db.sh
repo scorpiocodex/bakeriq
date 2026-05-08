@@ -47,18 +47,21 @@ run_with_spinner "Running migrations" \
   docker compose exec -T api alembic upgrade head
 
 # --- Step 3: run the seed script ----------------------------------------------
-run_with_spinner "Seeding admin user and 8 customers" \
-  docker compose exec -T api python -m scripts.seed_phase_2_customers
+run_with_spinner "Seeding admin user, customers, categories, products" \
+  docker compose exec -T api python -m scripts.seed_phase_2
 
 # --- Step 4: print summary ----------------------------------------------------
 customer_count=$(docker compose exec -T db psql -U bakeriq -d bakeriq -tAc \
   "SELECT count(*) FROM customers")
 user_count=$(docker compose exec -T db psql -U bakeriq -d bakeriq -tAc \
   "SELECT count(*) FROM users")
+category_count=$(docker compose exec -T db psql -U bakeriq -d bakeriq -tAc \
+  "SELECT count(*) FROM categories")
+product_count=$(docker compose exec -T db psql -U bakeriq -d bakeriq -tAc \
+  "SELECT count(*) FROM products")
 
 echo
 echo "  ${C_GREEN}${C_BOLD}Done.${C_RESET}"
-status_info "${user_count} user, ${customer_count} customers in the dev database"
+status_info "${user_count} user, ${customer_count} customers, ${category_count} categories, ${product_count} products"
 status_info "Login: owner@bakeriq.com / bakeriqowner"
-status_info "Products will be added in Phase 2 task 2"
 echo
