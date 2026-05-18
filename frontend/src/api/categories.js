@@ -10,7 +10,7 @@ export async function listCategories({
     return data;
 }
 
-export function getCategory(id) {
+export async function getCategory(id) {
     const { data } = await client.get(`/categories/${id}`);
     return data;
 }

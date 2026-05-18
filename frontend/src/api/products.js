@@ -1,4 +1,4 @@
-import client from 'client';
+import client from './client';
 
 export async function listProducts({
     skip = 0,
@@ -11,7 +11,7 @@ export async function listProducts({
     const params = {
         skip,
         limit,
-        search,
+        status,
     };
     if (search) params.search = search;
     if (categoryId) params.category_id = categoryId;
