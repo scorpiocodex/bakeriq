@@ -8,7 +8,6 @@ const navItems = [
     { to: '/customers', label: 'Customers' },
     { to: '/products', label: 'Products' },
     { to: '/inventory', label: 'Inventory' },
-    { to: '/analytics', label: 'Analytics' },
     { to: '/billing', label: 'Billing' },
     { to: '/settings', label: 'Settings' },
 ];

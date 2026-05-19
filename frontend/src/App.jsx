@@ -1,7 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
-import Analytics from './pages/Analytics';
 import Billing from './pages/Billing';
 import Customers from './pages/Customers';
 import Dashboard from './pages/Dashboard';
@@ -30,7 +29,6 @@ export default function App() {
                 <Route path="/customers" element={<Customers />} />
                 <Route path="/products" element={<Products />} />
                 <Route path="/inventory" element={<Inventory />} />
-                <Route path="/analytics" element={<Analytics />} />
                 <Route path="/billing" element={<Billing />} />
                 <Route path="/settings" element={<Settings />} />
             </Route>
