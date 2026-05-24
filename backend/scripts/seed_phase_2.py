@@ -30,6 +30,7 @@ from app.core.database import SessionLocal
 from app.core.security import get_password_hash
 from app.models.category import Category
 from app.models.customer import Customer, PreferredPhone
+from app.models.default_order import DefaultOrder, DefaultOrderItem
 from app.models.product import Product
 from app.models.user import User
 
@@ -250,6 +251,33 @@ PRODUCT_FIXTURES = [
 ]
 
 
+# === Default order fixtures ==================================================
+# Two customers get recurring templates. Referenced by customer name +
+# product name; resolved to IDs at insert time (fixtures don't hardcode UUIDs).
+#
+# Anita: a daily breakfast regular — puffs + a sweet
+# Arjun: the office order — bulk puffs
+DEFAULT_ORDER_FIXTURES = [
+    {
+        "_customer": "Anita Menon",
+        "notes": "Morning regular — usually before 8 AM",
+        "is_active": True,
+        "items": [
+            {"_product": "Veg Puff", "quantity": 3},
+            {"_product": "Ladoo", "quantity": 2},
+        ],
+    },
+    {
+        "_customer": "Arjun Mathew",
+        "notes": "Office breakfast order, weekdays",
+        "is_active": True,
+        "items": [
+            {"_product": "Egg Puff", "quantity": 25},
+        ],
+    },
+]
+
+
 def _seed_admin_user(db) -> None:
     """Insert the admin user. Skipped if a user with this email already exists."""
     existing = db.query(User).filter(User.email == ADMIN_USER_FIXTURE["email"]).first()
@@ -298,20 +326,62 @@ def _seed_products(db, categories_by_name: dict[str, Category]) -> None:
         db.add(product)
 
 
+def _seed_default_orders(db) -> None:
+    """Insert default order templates, resolving customer + product names to IDs.
+
+    Must run AFTER customers and products are committed (or at least flushed)
+    so the name lookups find them.
+    """
+    for fixture in DEFAULT_ORDER_FIXTURES:
+        # Resolve the customer by name
+        customer_name = fixture["_customer"]
+        customer = db.query(Customer).filter(Customer.name == customer_name).first()
+        if customer is None:
+            raise ValueError(
+                f"Default order fixture references customer '{customer_name}' "
+                "which wasn't seeded"
+            )
+
+        default_order = DefaultOrder(
+            customer_id=customer.id,
+            notes=fixture["notes"],
+            is_active=fixture["is_active"],
+        )
+
+        # Resolve each item's product by name
+        for item_fixture in fixture["items"]:
+            product_name = item_fixture["_product"]
+            product = db.query(Product).filter(Product.name == product_name).first()
+            if product is None:
+                raise ValueError(
+                    f"Default order item references product '{product_name}' "
+                    "which wasn't seeded"
+                )
+            default_order.items.append(
+                DefaultOrderItem(
+                    product_id=product.id,
+                    quantity=item_fixture["quantity"],
+                )
+            )
+
+        db.add(default_order)
+
+
 def main() -> int:
     db = SessionLocal()
     try:
         _seed_admin_user(db)
         _seed_customers(db)
-        # Categories must be inserted (and flushed for IDs) before products
         categories_by_name = _seed_categories(db)
         _seed_products(db, categories_by_name)
+        db.flush()  # ensure customers + products have IDs before default orders
+        _seed_default_orders(db)
         db.commit()
 
-        # Useful breadcrumb if something crashes mid-flight
         print(
             f"Inserted admin user + {len(CUSTOMER_FIXTURES)} customers + "
-            f"{len(CATEGORY_FIXTURES)} categories + {len(PRODUCT_FIXTURES)} products",
+            f"{len(CATEGORY_FIXTURES)} categories + {len(PRODUCT_FIXTURES)} products + "
+            f"{len(DEFAULT_ORDER_FIXTURES)} default orders",
             flush=True,
         )
         return 0

@@ -59,9 +59,11 @@ category_count=$(docker compose exec -T db psql -U bakeriq -d bakeriq -tAc \
   "SELECT count(*) FROM categories")
 product_count=$(docker compose exec -T db psql -U bakeriq -d bakeriq -tAc \
   "SELECT count(*) FROM products")
+default_order_count=$(docker compose exec -T db psql -U bakeriq -d bakeriq -tAc \
+  "SELECT count(*) FROM default_orders")
 
 echo
 echo "  ${C_GREEN}${C_BOLD}Done.${C_RESET}"
-status_info "${user_count} user, ${customer_count} customers, ${category_count} categories, ${product_count} products"
+status_info "${user_count} user, ${customer_count} customers, ${category_count} categories, ${product_count} products, ${default_order_count} default orders"
 status_info "Login: owner@bakeriq.com / bakeriqowner"
 echo
