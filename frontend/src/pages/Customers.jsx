@@ -19,11 +19,13 @@
 import { useState } from 'react';
 import ConfirmDialog from '../components/ConfirmDialog';
 import CustomerFormModal from '../components/CustomerFormModal';
+import DefaultOrderModal from '../components/DefaultOrderModal';
 import {
     useCustomersList,
     useDeactivateCustomer,
     useUpdateCustomer,
 } from '../hooks/useCustomers';
+
 
 // =============================================================================
 // Filter chip definitions — adding a new chip is one entry here.
@@ -95,6 +97,7 @@ export default function Customers() {
     // and reactivating inactive customers (via the inline Reactivate button).
     // Both flows go through PUT /customers/{id} — different payload shapes only.
     const updateMut = useUpdateCustomer();
+    const [defaultOrderTarget, setDefaultOrderTarget] = useState(null);
 
     // ---- Handlers ----
     function openCreate() {
@@ -282,15 +285,22 @@ export default function Customers() {
                                 </td>
 
                                 {/* Actions:
-                    - Edit always available (any customer field can be changed)
-                    - Active customers get red "Deactivate" (destructive)
-                    - Inactive customers get green "Reactivate" (recovery, no confirm) */}
+                                    - Edit always available (any customer field can be changed)
+                                    - Active customers get red "Deactivate" (destructive)
+                                    - Inactive customers get green "Reactivate" (recovery, no confirm)
+                                */}
                                 <td className="px-3 py-2.5 text-right">
                                     <button
                                         onClick={() => openEdit(c)}
                                         className="text-brand-600 hover:text-brand-700 text-xs mr-3"
                                     >
                                         Edit
+                                    </button>
+                                    <button
+                                        onClick={() => setDefaultOrderTarget(c)}
+                                        className="text-slate-600 hover:text-slate-800 text-xs mr-3"
+                                    >
+                                        Default order
                                     </button>
                                     {c.is_active ? (
                                         <button
@@ -336,6 +346,12 @@ export default function Customers() {
                 isProcessing={deactivateMut.isPending}
                 onConfirm={handleDeactivateConfirm}
                 onCancel={() => setDeactivateTarget(null)}
+            />
+
+            <DefaultOrderModal
+                open={defaultOrderTarget !== null}
+                customer={defaultOrderTarget}
+                onClose={() => setDefaultOrderTarget(null)}
             />
         </>
     );
