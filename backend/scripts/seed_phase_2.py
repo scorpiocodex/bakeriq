@@ -31,6 +31,7 @@ from app.core.security import get_password_hash
 from app.models.category import Category
 from app.models.customer import Customer, PreferredPhone
 from app.models.default_order import DefaultOrder, DefaultOrderItem
+from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product
 from app.models.user import User
 
@@ -152,6 +153,69 @@ CUSTOMER_FIXTURES = [
     },
 ]
 
+# === Order fixtures ==========================================================
+# Sample orders spanning statuses and a couple of days. Referenced by
+# customer + product name; snapshotted at seed time. day_offset is relative
+# to today (0 = today, -1 = yesterday).
+ORDER_FIXTURES = [
+    {
+        "_customer": "Anita Menon",
+        "status": OrderStatus.delivering,
+        "day_offset": 0,
+        "notes": "Morning regular",
+        "items": [
+            {"_product": "Veg Puff", "quantity": 3},
+            {"_product": "Ladoo", "quantity": 2},
+        ],
+    },
+    {
+        "_customer": "Arjun Mathew",
+        "status": OrderStatus.ready,
+        "day_offset": 0,
+        "notes": "Office order",
+        "items": [
+            {"_product": "Egg Puff", "quantity": 25},
+        ],
+    },
+    {
+        "_customer": "Priya Raghavan",
+        "status": OrderStatus.preparing,
+        "day_offset": 0,
+        "notes": None,
+        "items": [
+            {"_product": "Black Forest Cake (1kg)", "quantity": 1},
+            {"_product": "Chicken Puff", "quantity": 6},
+        ],
+    },
+    {
+        "_customer": "Anita Menon",
+        "status": OrderStatus.received,
+        "day_offset": 0,
+        "notes": "Add extra napkins",
+        "items": [
+            {"_product": "Bread", "quantity": 2},
+        ],
+    },
+    {
+        "_customer": "Ravi Sankar",
+        "status": OrderStatus.delivering,
+        "day_offset": -1,
+        "notes": "Yesterday's delivery",
+        "items": [
+            {"_product": "Veg Puff", "quantity": 10},
+            {"_product": "Sweet Porotta", "quantity": 4},
+        ],
+    },
+    {
+        "_customer": "Priya Raghavan",
+        "status": OrderStatus.cancelled,
+        "day_offset": -1,
+        "notes": "Customer cancelled — out of town",
+        "items": [
+            {"_product": "Black Forest Cake (1/2kg)", "quantity": 1},
+        ],
+    },
+]
 
 # === Category fixtures =======================================================
 # Five canonical categories. display_order controls sort sequence in the
@@ -367,6 +431,58 @@ def _seed_default_orders(db) -> None:
         db.add(default_order)
 
 
+def _seed_orders(db) -> None:
+    """Insert sample orders, snapshotting product details at seed time.
+
+    Must run AFTER customers and products are flushed (name lookups need IDs).
+    """
+    from datetime import date, timedelta
+
+    for fixture in ORDER_FIXTURES:
+        customer_name = fixture["_customer"]
+        customer = db.query(Customer).filter(Customer.name == customer_name).first()
+        if customer is None:
+            raise ValueError(
+                f"Order fixture references customer '{customer_name}' "
+                "which wasn't seeded"
+            )
+
+        order = Order(
+            customer_id=customer.id,
+            status=fixture["status"],
+            order_date=date.today() + timedelta(days=fixture["day_offset"]),
+            notes=fixture["notes"],
+            total_amount=0,  # computed below
+        )
+
+        total = 0.0
+        for item_fixture in fixture["items"]:
+            product_name = item_fixture["_product"]
+            product = db.query(Product).filter(Product.name == product_name).first()
+            if product is None:
+                raise ValueError(
+                    f"Order item references product '{product_name}' "
+                    "which wasn't seeded"
+                )
+            qty = item_fixture["quantity"]
+            unit_price = float(product.unit_price)
+            subtotal = round(unit_price * qty, 2)
+            order.items.append(
+                OrderItem(
+                    product_id=product.id,
+                    product_name=product.name,
+                    unit_price=unit_price,
+                    unit_label=product.unit_label,
+                    quantity=qty,
+                    subtotal=subtotal,
+                )
+            )
+            total += subtotal
+
+        order.total_amount = round(total, 2)
+        db.add(order)
+
+
 def main() -> int:
     db = SessionLocal()
     try:
@@ -374,14 +490,16 @@ def main() -> int:
         _seed_customers(db)
         categories_by_name = _seed_categories(db)
         _seed_products(db, categories_by_name)
-        db.flush()  # ensure customers + products have IDs before default orders
+        db.flush()  # customers + products need IDs before dependents
         _seed_default_orders(db)
+        _seed_orders(db)
         db.commit()
 
         print(
             f"Inserted admin user + {len(CUSTOMER_FIXTURES)} customers + "
             f"{len(CATEGORY_FIXTURES)} categories + {len(PRODUCT_FIXTURES)} products + "
-            f"{len(DEFAULT_ORDER_FIXTURES)} default orders",
+            f"{len(DEFAULT_ORDER_FIXTURES)} default orders + "
+            f"{len(ORDER_FIXTURES)} orders",
             flush=True,
         )
         return 0
