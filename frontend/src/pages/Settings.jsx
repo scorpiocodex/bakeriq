@@ -1,3 +1,4 @@
+/* eslint-disable react/react-in-jsx-scope */
 /**
  * Settings page — currently houses Category management.
  *
@@ -265,7 +266,7 @@ function CategoriesSection() {
                 // === Display mode ===
                 <>
                   <span className="flex-1 text-sm text-slate-900">{c.name}</span>
-                  <span className="text-[10px] text-slate-400">order: {c.display_order}</span>
+                  <span className="text-[10px] text-slate-500">Order: {c.display_order}</span>
 
                   <StatusBadge status={c.is_active ? 'active' : 'inactive'} size="xs" />
 

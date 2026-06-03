@@ -1,3 +1,4 @@
+/* eslint-disable react/react-in-jsx-scope */
 /**
  * Customers page — list, search, filter, add, edit, deactivate, reactivate.
  *
@@ -23,6 +24,8 @@ import DefaultOrderModal from '../components/DefaultOrderModal';
 import RowActionsMenu from '../components/RowActionsMenu';
 import StatusBadge from '../components/StatusBadge';
 import { useCustomersList, useDeactivateCustomer, useUpdateCustomer } from '../hooks/useCustomers';
+
+import { formatPhone } from '../lib/format';
 
 // =============================================================================
 // Filter chip definitions — adding a new chip is one entry here.
@@ -220,15 +223,17 @@ export default function Customers() {
                     <span className="font-medium">{c.name}</span>
                   </div>
                 </td>
-
                 <td className="px-3 py-2.5 font-mono text-[11px] text-slate-600">
-                  {c.primary_phone}
+                  {formatPhone(c.primary_phone)}
                 </td>
 
-                <td className="px-3 py-2.5 font-mono text-[11px] text-slate-600">
-                  {c.secondary_phone || <span className="text-slate-400">—</span>}
+                <td className="px-3 py-2.5 font-mono text-[11px] text-slate-700">
+                  {c.secondary_phone ? (
+                    formatPhone(c.secondary_phone)
+                  ) : (
+                    <span className="text-slate-400">—</span>
+                  )}
                 </td>
-
                 {/* Channel chip — teal for WhatsApp, blue for Voice */}
                 <td className="px-3 py-2.5">
                   {c.whatsapp_enabled ? (
@@ -241,12 +246,10 @@ export default function Customers() {
                     </span>
                   )}
                 </td>
-
                 {/* Active/inactive status chip */}
                 <td className="px-3 py-2.5">
                   <StatusBadge status={c.is_active ? 'active' : 'inactive'} size="xs" />
                 </td>
-
                 {/* Actions menu — collapses Edit / Default order / Deactivate-or-Reactivate
                     into a single ⋯ popover to keep the row tidy. */}
                 <td className="px-3 py-2.5 text-right">

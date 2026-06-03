@@ -1,3 +1,4 @@
+/* eslint-disable react/react-in-jsx-scope */
 /**
  * Products page — list, filter by status + category, add, edit, deactivate.
  *
@@ -13,6 +14,9 @@ import RowActionsMenu from '../components/RowActionsMenu';
 import StatusBadge from '../components/StatusBadge';
 import { useCategoriesList } from '../hooks/useCategories';
 import { useDeactivateProduct, useProductsList, useUpdateProduct } from '../hooks/useProducts';
+import { formatUnitLabel } from '../lib/format';
+import { Check, Minus } from 'lucide-react';
+import { formatINR } from '../lib/format';
 
 const STATUS_FILTERS = [
   { key: 'active', label: 'Active' },
@@ -154,11 +158,7 @@ export default function Products() {
             <button
               key={c.id}
               onClick={() => setActiveCategoryId(c.id)}
-              className={`text-xs px-3 py-1 rounded-full border ${
-                activeCategoryId === c.id
-                  ? 'bg-brand-50 text-brand-700 border-brand-300 font-medium'
-                  : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-              }`}
+              className={`text-xs px-3 py-1 rounded-full border capitalize ${activeCategoryId === c.id ? 'bg-brand-50 text-brand-700 border-brand-300 font-medium' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
             >
               {c.name}
             </button>
@@ -173,7 +173,7 @@ export default function Products() {
             <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-left">
               <th className="px-3 py-2 font-medium">Product</th>
               <th className="px-3 py-2 font-medium">Category</th>
-              <th className="px-3 py-2 font-medium">Price</th>
+              <th className="px-3 py-2 font-medium text-right">Price</th>
               <th className="px-3 py-2 font-medium">Available today</th>
               <th className="px-3 py-2 font-medium">Status</th>
               <th className="px-3 py-2 font-medium text-right">Actions</th>
@@ -217,7 +217,7 @@ export default function Products() {
 
                 <td className="px-3 py-2.5">
                   {p.category ? (
-                    <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-700 rounded">
+                    <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-700 rounded capitalize">
                       {p.category.name}
                     </span>
                   ) : (
@@ -225,17 +225,24 @@ export default function Products() {
                   )}
                 </td>
 
-                <td className="px-3 py-2.5 font-mono text-slate-700">
-                  ₹{Number(p.unit_price).toFixed(2)} / {p.unit_label}
+                <td className="px-3 py-2.5 font-mono text-slate-700 text-right">
+                  {formatINR(p.unit_price)} / {formatUnitLabel(p.unit_label)}
                 </td>
 
                 <td className="px-3 py-2.5">
                   {p.is_available_today ? (
-                    <span className="text-[10px] px-2 py-0.5 bg-green-100 text-green-800 rounded">
+                    <span className="inline-flex items-center gap-1 text-xs text-slate-700">
+                      <Check
+                        size={14}
+                        className="text-green-600"
+                        aria-hidden="true"
+                        strokeWidth={2.5}
+                      />
                       Yes
                     </span>
                   ) : (
-                    <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-600 rounded">
+                    <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                      <Minus size={14} aria-hidden="true" strokeWidth={2.5} />
                       No
                     </span>
                   )}

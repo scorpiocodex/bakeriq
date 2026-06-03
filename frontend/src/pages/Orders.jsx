@@ -1,3 +1,4 @@
+/* eslint-disable react/react-in-jsx-scope */
 /**
  * Orders page — list of all orders with filters, plus the detail panel and
  * create/edit modal.
@@ -18,6 +19,8 @@ import OrderFormModal from '../components/OrderFormModal';
 import { useCustomersList } from '../hooks/useCustomers';
 import { useDeleteOrder, useOrdersList } from '../hooks/useOrders';
 import StatusBadge from '../components/StatusBadge';
+import { formatPhone } from '../lib/format';
+import { formatINR } from '../lib/format';
 
 const STATUS_FILTERS = [
   { key: null, label: 'All' },
@@ -156,7 +159,7 @@ export default function Orders() {
               <th className="px-3 py-2 font-medium">Customer</th>
               <th className="px-3 py-2 font-medium">Date</th>
               <th className="px-3 py-2 font-medium">Items</th>
-              <th className="px-3 py-2 font-medium">Total</th>
+              <th className="px-3 py-2 font-medium text-right">Total</th>
               <th className="px-3 py-2 font-medium">Status</th>
             </tr>
           </thead>
@@ -192,12 +195,14 @@ export default function Orders() {
               >
                 <td className="px-3 py-2.5">
                   <div className="font-medium">{o.customer.name}</div>
-                  <div className="text-[11px] text-slate-500">{o.customer.primary_phone}</div>
+                  <div className="text-[11px] text-slate-600">
+                    {formatPhone(o.customer.primary_phone)}
+                  </div>
                 </td>
                 <td className="px-3 py-2.5 text-slate-700">{o.order_date}</td>
                 <td className="px-3 py-2.5 text-slate-700">{o.item_count}</td>
-                <td className="px-3 py-2.5 font-mono text-slate-700">
-                  ₹{Number(o.total_amount).toFixed(2)}
+                <td className="px-3 py-2.5 font-mono text-slate-700 text-right">
+                  {formatINR(o.total_amount)}
                 </td>
                 <td className="px-3 py-2.5">
                   <StatusBadge status={o.status} size="xs" />

@@ -1,23 +1,16 @@
+/* eslint-disable react/prop-types */
+/* eslint-disable react/react-in-jsx-scope */
+
 /**
- * Sidebar — persistent on desktop (≥lg), slide-in drawer on mobile (<lg).
- *
- * Desktop: visible column at the left, fixed width.
- * Mobile: a logo-as-menu trigger lives at the top of the page (rendered by
- *   the Layout, not here). Tapping it sets `mobileOpen=true`, which slides
- *   this drawer in from the left. Tapping a nav item or the backdrop closes it.
- *
- * Visual structure:
- *   - Brand header (logo + name)
- *   - Grouped nav (Operations / Setup) with icons + labels
- *   - Footer: avatar + owner name + email + logout
- */
+ * Sidebar
+ **/
 import { useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   Boxes,
   LayoutDashboard,
   LogOut,
-  Package,
+  ShoppingBag,
   Receipt,
   Settings,
   ShoppingCart,
@@ -25,6 +18,7 @@ import {
 } from 'lucide-react';
 
 import { useAuth } from '../context/AuthContext';
+import BrandMark from './BrandMark';
 
 const NAV_SECTIONS = [
   {
@@ -33,7 +27,7 @@ const NAV_SECTIONS = [
       { to: '/', label: 'Dashboard', icon: LayoutDashboard, exact: true },
       { to: '/orders', label: 'Orders', icon: ShoppingCart },
       { to: '/customers', label: 'Customers', icon: Users },
-      { to: '/products', label: 'Products', icon: Package },
+      { to: '/products', label: 'Products', icon: ShoppingBag },
     ],
   },
   {
@@ -50,11 +44,8 @@ export default function Sidebar({ mobileOpen, onClose }) {
   const { user, logout } = useAuth();
   const location = useLocation();
 
-  // Close the mobile drawer when the route changes (so tapping a nav item
-  // both navigates AND dismisses the drawer).
   useEffect(() => {
     if (mobileOpen) onClose();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname]);
 
   // Close on Escape (good keyboard hygiene for the mobile overlay)
@@ -93,9 +84,7 @@ export default function Sidebar({ mobileOpen, onClose }) {
       >
         {/* Brand header */}
         <div className="flex items-center gap-2 px-4 py-4 border-b border-slate-100">
-          <div className="w-9 h-9 rounded-lg bg-brand-600 text-white flex items-center justify-center font-semibold">
-            B
-          </div>
+          <BrandMark size="sm" />
           <div>
             <p className="text-sm font-medium text-slate-900 leading-tight">BakeriQ</p>
             <p className="text-[10px] text-slate-500 leading-tight">Bakery operations</p>
@@ -106,7 +95,7 @@ export default function Sidebar({ mobileOpen, onClose }) {
         <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
           {NAV_SECTIONS.map((section) => (
             <div key={section.label}>
-              <p className="px-2 mb-1 text-[10px] uppercase tracking-wider text-slate-400 font-medium">
+              <p className="px-2 mb-1 text-[10px] uppercase tracking-wider text-slate-500 font-medium">
                 {section.label}
               </p>
               <ul className="space-y-0.5">
@@ -133,7 +122,7 @@ export default function Sidebar({ mobileOpen, onClose }) {
                             )}
                             <Icon
                               size={16}
-                              className={isActive ? 'text-brand-600' : 'text-slate-400'}
+                              className={isActive ? 'text-brand-600' : 'text-slate-500'}
                               aria-hidden="true"
                             />
                             <span>{item.label}</span>

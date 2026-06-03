@@ -1,3 +1,6 @@
+/* eslint-disable react/no-unescaped-entities */
+/* eslint-disable react/react-in-jsx-scope */
+/* eslint-disable react/prop-types */
 /**
  * Dashboard — today's order-flow snapshot.
  *
@@ -8,6 +11,8 @@
 import { useNavigate } from 'react-router-dom';
 
 import { useDashboardSummary } from '../hooks/useDashboard';
+
+import { formatINR } from '../lib/format';
 
 const BOARD_COLUMNS = [
   { key: 'received', label: 'Received', accent: 'border-slate-300', dot: 'bg-slate-400' },
@@ -61,7 +66,7 @@ export default function Dashboard() {
         />
         <StatCard
           label="Revenue today"
-          value={`₹${Number(s.revenue_today).toFixed(2)}`}
+          value={formatINR(s.revenue_today)}
           sub={`${s.today_orders} order${s.today_orders === 1 ? '' : 's'} today`}
         />
         <StatCard
@@ -94,7 +99,7 @@ export default function Dashboard() {
 
                 <div className="space-y-1.5">
                   {cards.length === 0 ? (
-                    <p className="text-xs text-slate-300 py-2">—</p>
+                    <p className="text-xs text-slate-400 py-2">—</p>
                   ) : (
                     cards.map((c) => (
                       <button
@@ -103,7 +108,7 @@ export default function Dashboard() {
                         className={`w-full text-left bg-white border ${col.accent} rounded-lg px-3 py-2 hover:bg-slate-50`}
                       >
                         <p className="text-sm font-medium text-slate-900">{c.customer_name}</p>
-                        <p className="text-xs text-slate-500">{c.item_summary}</p>
+                        <p className="text-xs text-slate-600">{c.item_summary}</p>
                       </button>
                     ))
                   )}

@@ -1,3 +1,5 @@
+/* eslint-disable react/react-in-jsx-scope */
+/* eslint-disable react/prop-types */
 /**
  * Right-side drawer showing one order's full detail: customer, line items,
  * total, notes, and status-change controls.
@@ -8,6 +10,8 @@
  */
 import { useChangeOrderStatus, useOrder } from '../hooks/useOrders';
 import StatusBadge from './StatusBadge';
+import { formatPhone } from '../lib/format';
+import { formatINR } from './../lib/format';
 
 // The forward chain — used to offer "advance to next" buttons.
 const FORWARD = ['received', 'preparing', 'ready', 'delivering'];
@@ -82,7 +86,9 @@ export default function OrderDetailPanel({ orderId, open, onClose, onEdit, onDel
               {/* Customer */}
               <div className="mb-4 pb-4 border-b border-slate-100">
                 <p className="text-sm font-medium text-slate-900">{order.customer.name}</p>
-                <p className="text-xs text-slate-500">{order.customer.primary_phone}</p>
+                <p className="text-xs text-slate-600">
+                  {formatPhone(order.customer.primary_phone)}
+                </p>
               </div>
 
               {/* Status + date */}
@@ -124,18 +130,16 @@ export default function OrderDetailPanel({ orderId, open, onClose, onEdit, onDel
                     <div key={item.id} className="flex items-center justify-between text-sm">
                       <span className="text-slate-700">
                         {item.product_name}
-                        <span className="text-slate-400 text-xs ml-1">× {item.quantity}</span>
+                        <span className="text-slate-500 text-xs ml-1">× {item.quantity}</span>
                       </span>
-                      <span className="font-mono text-slate-700">
-                        ₹{Number(item.subtotal).toFixed(2)}
-                      </span>
+                      <span className="font-mono text-slate-700">{formatINR(item.subtotal)}</span>
                     </div>
                   ))}
                 </div>
                 <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-200">
                   <span className="text-sm font-medium text-slate-900">Total</span>
                   <span className="font-mono font-medium text-slate-900">
-                    ₹{Number(order.total_amount).toFixed(2)}
+                    {formatINR(order.total)}
                   </span>
                 </div>
               </div>
