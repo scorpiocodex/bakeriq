@@ -27,7 +27,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func, Boolean
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -75,6 +75,15 @@ class Order(Base):
         nullable=False,
         default=OrderStatus.received,
         index=True,
+    )
+
+    # Drafts are bot-created orders awaiting customer confirmation.
+    # Manual orders (via dashboard) are never drafts. Bot creates with
+    # is_draft=True; flips to False on customer YES / 'Place order' tap.
+    # Dashboard list endpoints filter is_draft=False by default so drafts
+    # don't appear in the active order list until confirmed.
+    is_draft: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
     )
 
     # Which day's business this order belongs to. Defaults to today,

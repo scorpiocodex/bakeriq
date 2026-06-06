@@ -101,11 +101,18 @@ def list_orders(
     # Build each list row by letting Pydantic ingest the ORM object
     # (from_attributes=True takes care of the nested customer summary),
     # then patch in item_count which the ORM object doesn't expose directly.
-    items = []
-    for o in orders:
-        row = OrderListItem.model_validate(o)
-        row = row.model_copy(update={"item_count": len(o.items)})
-        items.append(row)
+    items = [
+        OrderListItem(
+            id=o.id,
+            customer=o.customer,  # type: ignore[arg-type]
+            status=o.status,
+            order_date=o.order_date,
+            total_amount=o.total_amount,
+            item_count=len(o.items),
+            created_at=o.created_at,
+        )
+        for o in orders
+    ]
 
     return {
         "items": [item.model_dump(mode="json") for item in items],
