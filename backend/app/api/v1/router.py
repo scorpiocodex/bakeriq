@@ -6,6 +6,7 @@ from app.api.v1 import (
     default_orders,
     orders,
     products,
+    webhooks
 )
 from fastapi import APIRouter
 
@@ -18,3 +19,4 @@ api_router.include_router(default_orders.router)
 api_router.include_router(orders.router)
 api_router.include_router(orders.prefill_router)
 api_router.include_router(dashboard.router)
+api_router.include_router(webhooks.router)

@@ -14,6 +14,10 @@ This step adds the router + the status endpoint. Step 6 adds the rest.
 from datetime import date
 from uuid import UUID
 
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.models.default_order import DefaultOrder
@@ -27,9 +31,6 @@ from app.schemas.order import (
     OrderUpdate,
 )
 from app.services import order_service
-from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -96,18 +97,16 @@ def list_orders(
         customer_id=customer_id,
         order_date=order_date,
     )
-    items = [
-        OrderListItem(
-            id=o.id,
-            customer=o.customer,
-            status=o.status,
-            order_date=o.order_date,
-            total_amount=o.total_amount,
-            item_count=len(o.items),
-            created_at=o.created_at,
-        )
-        for o in orders
-    ]
+
+    # Build each list row by letting Pydantic ingest the ORM object
+    # (from_attributes=True takes care of the nested customer summary),
+    # then patch in item_count which the ORM object doesn't expose directly.
+    items = []
+    for o in orders:
+        row = OrderListItem.model_validate(o)
+        row = row.model_copy(update={"item_count": len(o.items)})
+        items.append(row)
+
     return {
         "items": [item.model_dump(mode="json") for item in items],
         "total": total,
@@ -185,7 +184,6 @@ def order_prefill(
     suggestions = order_service.build_prefill_items_from_default(db, customer_id)
 
     # Compare against the raw template size to compute how many were skipped
-
     template = db.scalars(
         select(DefaultOrder).where(DefaultOrder.customer_id == customer_id)
     ).first()

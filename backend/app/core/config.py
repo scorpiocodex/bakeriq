@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
 
+    # Twilio (WhatsApp via sandbox in dev, real Sender in prod)
+    TWILIO_ACCOUNT_SID: str
+    TWILIO_AUTH_TOKEN: str
+    TWILIO_WHATSAPP_FROM: str = "whatsapp:+14155238886"  # Sandbox default
+
+    # Public base URL Twilio uses
+    PUBLIC_BASE_URL: str = "http://localhost:8000"
+
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = Field(default_factory=list)
 
@@ -77,7 +85,7 @@ def get_settings() -> Settings:
     via the assignment below) — get_settings() exists for tests that want
     to clear the cache and re-load with different env vars.
     """
-    return Settings()
+    return Settings()  # type: ignore[call-arg]
 
 
 settings = get_settings()

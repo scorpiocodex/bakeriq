@@ -18,15 +18,22 @@ Schema notes:
   - Soft-delete via is_active — preserves order history references.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from app.models.base import Base
 from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.category import Category
 
 
 class Product(Base):
@@ -45,7 +52,7 @@ class Product(Base):
         index=True,
     )
 
-    category: Mapped["Category"] = relationship(  # noqa: F821
+    category: Mapped["Category"] = relationship(
         "Category",
         lazy="joined",  # always JOIN — we always want category info with products
     )

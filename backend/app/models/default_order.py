@@ -8,10 +8,12 @@ Concept:
   template.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from app.models.base import Base
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -23,6 +25,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.product import Product
 
 
 class DefaultOrder(Base):
@@ -102,7 +109,7 @@ class DefaultOrderItem(Base):
     # Relationship to the product — lazy="joined" so when we serialise an
     # item we have its product details (name, price) without a separate
     # query. Same pattern as Product.category.
-    product: Mapped["Product"] = relationship(  # noqa: F821
+    product: Mapped["Product"] = relationship(
         "Product",
         lazy="joined",
     )
