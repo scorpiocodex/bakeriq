@@ -1,43 +1,175 @@
-"""Twilio inbound webhook.
+"""Twilio inbound webhook — main dispatcher.
 
-Twilio sends a POST here whenever a customer messages our WhatsApp number.
-Right now this is an echo bot — replies with the same body. Step 3 will
-replace the echo handler with the state-machine router.
+For each inbound WhatsApp message:
 
-Why TwiML for the response: we can reply synchronously by returning a
-TwiML <Message> in the response body, and Twilio sends it to the customer.
-For longer / async replies (LLM parsing), we'll switch to dispatching a
-Celery task and returning empty TwiML — the worker sends the outbound
-message via the REST API.
+  1. Parse the form payload (signature already verified by the dependency).
+  2. Strip the 'whatsapp:' prefix from the From address to get a clean
+     phone number we match against the database.
+  3. Get or create the Conversation row in Postgres (audit trail anchor).
+  4. Log the inbound message.
+  5. Decide which handler runs:
+     - Pending registration in 'pending' status → registration handler
+     - Recognised Customer → customer handler
+     - Unknown phone → registration handler (will create the row)
+  6. Send the reply via TwiML (synchronous; Twilio delivers it).
+  7. Log the outbound reply.
 
-Signature verification is mandatory on every endpoint here. Without it,
-anyone could fake an inbound message and trigger our handlers.
+LLM safety valve (Task 6) sits in step 6 — if the customer handler
+returns None (no fast-path match), we hand off to Celery and reply with
+a placeholder for now. The Celery worker will send the real reply via
+the REST API once it has the LLM response.
 """
 
-from fastapi import APIRouter, Depends, Request, Response
+import logging
 
+from fastapi import APIRouter, Depends, Request, Response
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
 from app.core.twilio_client import verify_twilio_signature
+from app.services import (
+    conversation_log,
+    customer_handler,
+    pending_registration_service as pr_svc,
+    registration_handler,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
+# Placeholder for the LLM safety-valve path until Task 6 wires it up.
+# Returning this synchronously means the customer sees "I'll think about
+# this" while the Celery worker (Task 6) sends the real reply moments
+# later via the REST API.
+LLM_PLACEHOLDER_REPLY = (
+    "Let me check on that — give me a moment."
+)
 
 
 @router.post(
     "/twilio",
     dependencies=[Depends(verify_twilio_signature)],
-    response_class=Response
+    response_class=Response,
 )
-async def twilio_inbound(request: Request) -> Response:
-    """Receive an inbound twilio whatsapp message"""
+async def twilio_inbound(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Main inbound dispatcher for WhatsApp messages."""
     form = await request.form()
-    body = form.get("Body", "")
-    from_ = form.get("From", "unknown")
+    body = str(form.get("Body", "")).strip()
+    from_address = str(form.get("From", ""))
+    twilio_sid = str(form.get("MessageSid", "")) or None
 
-    # TwiML response
+    # Twilio addresses arrive as "whatsapp:+919..." — strip the prefix
+    # so we match against the same format we store in Customer.primary_phone.
+    phone = from_address.removeprefix("whatsapp:") if from_address else ""
+
+    if not phone:
+        logger.warning(
+            "Twilio webhook with missing/blank From: form=%s",
+            dict(form),
+        )
+        return _twiml_response("Sorry, I didn't catch that. Please try again.")
+
+    # === Identify the sender ===
+    customer = conversation_log.find_customer_by_phone(db, phone)
+    pending = pr_svc.get_pending_by_phone(db, phone)
+
+    # === Get or create the conversation ===
+    conversation = conversation_log.get_or_create_conversation(
+        db,
+        phone=phone,
+        customer_id=customer.id if customer else None,
+    )
+
+    # === Log the inbound ===
+    conversation_log.log_inbound_message(
+        db,
+        conversation_id=conversation.id,
+        body=body,
+        twilio_sid=twilio_sid,
+    )
+
+    # === Dispatch ===
+    reply = _dispatch(db, phone, body, customer, pending)
+
+    # === Log the outbound ===
+    # twilio_sid is unknown for synchronous TwiML replies — Twilio assigns
+    # it on delivery but doesn't return it to us in this response cycle.
+    # The audit row still gets written; we just don't have the SID.
+    conversation_log.log_outbound_message(
+        db,
+        conversation_id=conversation.id,
+        body=reply,
+        twilio_sid=None,
+    )
+
+    db.commit()
+
+    return _twiml_response(reply)
+
+
+def _dispatch(
+    db: Session,
+    phone: str,
+    body: str,
+    customer,
+    pending,
+) -> str:
+    """Pick the right handler and return its reply text.
+
+    Decision order:
+      1. Customer + still has a 'pending' registration row (unusual,
+         shouldn't happen at runtime) → fall through to customer_handler.
+         The pending row is residual; the customer is approved.
+      2. Pending registration in 'pending' status → registration_handler.
+         Includes 'rejected' status which the handler also covers.
+      3. Customer recognised by phone → customer_handler, with LLM
+         placeholder fallback if the handler returns None.
+      4. Truly unknown phone → registration_handler (creates the row).
+    """
+    # Case 1: pending in pending status → registration flow drives this
+    if pending and pending.status == "pending":
+        return registration_handler.handle_registration_message(db, phone, body)
+
+    # Case 2: rejected pending registration → registration_handler will
+    # return the rejected message
+    if pending and pending.status == "rejected":
+        return registration_handler.handle_registration_message(db, phone, body)
+
+    # Case 3: known customer → fast-path or LLM
+    if customer:
+        reply = customer_handler.handle_customer_message(db, customer, body)
+        if reply is None:
+            # Hand-off point to LLM safety valve. Task 6 will dispatch a
+            # Celery job here. For now we send the placeholder and the
+            # real bot reply path will come later.
+            logger.info(
+                "LLM safety-valve hit: customer_id=%s phone=%s body=%r",
+                customer.id, phone, body,
+            )
+            return LLM_PLACEHOLDER_REPLY
+        return reply
+
+    # Case 4: truly unknown phone → start registration
+    return registration_handler.handle_registration_message(db, phone, body)
+
+
+def _twiml_response(message: str) -> Response:
+    """Wrap a reply string in TwiML XML for the synchronous Twilio reply.
+
+    XML-escapes the body so customer-influenced data can't break the
+    response (e.g., a customer name containing '&' or '<').
+    """
+    from xml.sax.saxutils import escape
+
     twiml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         "<Response>\n"
-        f"  <Message>Echo from BakeriQ: {body}</Message>\n"
+        f"  <Message>{escape(message)}</Message>\n"
         "</Response>"
     )
-
     return Response(content=twiml, media_type="application/xml")
