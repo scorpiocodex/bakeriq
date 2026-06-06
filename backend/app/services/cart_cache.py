@@ -51,7 +51,7 @@ def get_cart(token: str) -> dict[str, Any] | None:
     if raw is None:
         return None
     r.expire(key, CART_TTL_SECONDS)
-    return json.loads(raw) # type: ignore
+    return json.loads(raw)      # type: ignore[arg-type]
 
 
 def save_cart(token: str, data: dict[str, Any]) -> None:

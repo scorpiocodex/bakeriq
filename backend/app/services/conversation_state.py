@@ -54,7 +54,7 @@ def get_state(phone: str) -> dict[str, Any] | None:
 
     # Refresh TTL on read
     r.expire(key, CONVERSATION_TTL_SECONDS)
-    return json.loads(raw) # type: ignore
+    return json.loads(raw)      # type: ignore[arg-type]
 
 
 def set_state(phone: str, data: dict[str, Any]) -> None:
