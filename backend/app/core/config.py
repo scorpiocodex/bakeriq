@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # Public base URL Twilio uses
     PUBLIC_BASE_URL: str = "http://localhost:8000"
 
+    # Customer web app URL (for links in messages)
+    CUSTOMER_WEB_BASE_URL: str = "http://localhost:5174"
+
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = Field(default_factory=list)
 

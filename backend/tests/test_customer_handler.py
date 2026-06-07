@@ -1,7 +1,6 @@
 """Tests for the customer handler — bot logic for registered customers."""
 
 import pytest
-
 from app.models.category import Category
 from app.models.customer import Customer
 from app.models.product import Product
@@ -87,17 +86,28 @@ def test_order_status_with_no_orders(db_session, customer):
     assert "yet" in reply.lower()
 
 
-def test_button_tap_returns_none_for_web_app_routing(db_session, customer):
-    """'Reorder last' and 'New order' button taps fall through to
-    web-app issuance (Task 5). Until that's wired, they return None —
-    the dispatcher routes those through the LLM placeholder.
-    """
-    assert handle_customer_message(db_session, customer, "Reorder last") is None
-    assert handle_customer_message(db_session, customer, "New order") is None
+def test_reorder_last_with_no_history_redirects_to_new(db_session, customer):
+    """Without prior orders, 'Reorder last' returns the helpful nudge
+    rather than issuing a useless link to an empty cart."""
+    reply = handle_customer_message(db_session, customer, "Reorder last")
+    assert reply is not None
+    assert "first one" in reply.lower()
+
+
+def test_new_order_issues_web_app_link(db_session, customer):
+    """'New order' button tap issues a token and returns a link."""
+    reply = handle_customer_message(db_session, customer, "New order")
+    assert reply is not None
+    # The link should be in the message body
+    assert "/new/" in reply
+    # 30-minute expiry note
+    assert "30 minutes" in reply
 
 
 def test_free_text_returns_none_for_llm_fallback(db_session, customer):
-    reply = handle_customer_message(db_session, customer, "2 veg puff and 1 ladoo please")
+    reply = handle_customer_message(
+        db_session, customer, "2 veg puff and 1 ladoo please"
+    )
     assert reply is None
 
 

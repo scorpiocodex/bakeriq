@@ -29,24 +29,45 @@ from app.models.order import Order, OrderStatus
 from app.models.product import Product
 from app.services import conversation_state as conv_state
 
-
 # === Keyword sets ===
 # Keep these as frozenset for O(1) lookup. Lowercased on the way in;
 # customer's message is also lowercased before matching.
 
-GREETINGS = frozenset({
-    "hi", "hello", "hey", "hai", "namaskaram", "namaste", "vanakkam",
-    "good morning", "good afternoon", "good evening",
-})
+GREETINGS = frozenset(
+    {
+        "hi",
+        "hello",
+        "hey",
+        "hai",
+        "namaskaram",
+        "namaste",
+        "vanakkam",
+        "good morning",
+        "good afternoon",
+        "good evening",
+    }
+)
 
-MENU_KEYWORDS = frozenset({
-    "menu", "items", "what's available", "whats available",
-    "today's menu", "todays menu", "what do you have",
-})
+MENU_KEYWORDS = frozenset(
+    {
+        "menu",
+        "items",
+        "what's available",
+        "whats available",
+        "today's menu",
+        "todays menu",
+        "what do you have",
+    }
+)
 
-STATUS_KEYWORDS = frozenset({
-    "status", "order status", "my order", "track order",
-})
+STATUS_KEYWORDS = frozenset(
+    {
+        "status",
+        "order status",
+        "my order",
+        "track order",
+    }
+)
 
 # Three buttons in the returning-customer menu. The button LABELS sent
 # from Twilio are what come back as message body when tapped — match
@@ -55,17 +76,36 @@ BUTTON_REORDER_LAST = "reorder last"
 BUTTON_NEW_ORDER = "new order"
 BUTTON_ORDER_STATUS = "order status"
 
-CONFIRM_KEYWORDS = frozenset({
-    "yes", "y", "confirm", "ok", "okay", "sheri", "place order",
-})
+CONFIRM_KEYWORDS = frozenset(
+    {
+        "yes",
+        "y",
+        "confirm",
+        "ok",
+        "okay",
+        "sheri",
+        "place order",
+    }
+)
 
-CANCEL_KEYWORDS = frozenset({
-    "no", "n", "cancel", "venda", "stop",
-})
+CANCEL_KEYWORDS = frozenset(
+    {
+        "no",
+        "n",
+        "cancel",
+        "venda",
+        "stop",
+    }
+)
 
-MODIFY_KEYWORDS = frozenset({
-    "modify", "edit", "change", "update",
-})
+MODIFY_KEYWORDS = frozenset(
+    {
+        "modify",
+        "edit",
+        "change",
+        "update",
+    }
+)
 
 
 # === Reply templates ===
@@ -81,6 +121,7 @@ def _time_of_day_greeting() -> str:
     """Return time-appropriate greeting ('Good morning' etc) based on the
     bakery's local time."""
     from datetime import datetime
+
     h = datetime.now().hour
     if h < 12:
         return GREETING_PERIOD_TIMES["morning"]
@@ -101,12 +142,7 @@ MSG_GREETING_REGISTERED = (
 )
 
 MSG_ORDER_STATUS_TEMPLATE = (
-    "*Order #{short_id}*\n"
-    "Placed: {placed}\n"
-    "\n"
-    "{status_emoji} {status_label}\n"
-    "\n"
-    "{footer}"
+    "*Order #{short_id}*\nPlaced: {placed}\n\n{status_emoji} {status_label}\n\n{footer}"
 )
 
 MSG_NO_ORDERS = (
@@ -133,6 +169,7 @@ STATUS_FOOTER = {
 
 
 # === Main dispatch ===
+
 
 def handle_customer_message(
     db: Session,
@@ -168,16 +205,17 @@ def handle_customer_message(
         return _build_order_status(db, customer)
 
     if text == BUTTON_REORDER_LAST:
-        return None  # Web-app link issuance — comes in Task 5
+        return _build_reorder_link(db, customer)
 
     if text == BUTTON_NEW_ORDER:
-        return None  # Web-app link issuance — comes in Task 5
+        return _build_new_order_link(db, customer)
 
     # No fast-path match — caller will route to LLM
     return None
 
 
 # === Helpers ===
+
 
 def _matches_phrase(text: str, keywords: frozenset[str]) -> bool:
     """Loose match: 'hi anita how are you' matches the 'hi' keyword.
@@ -212,13 +250,11 @@ def _build_menu(db: Session) -> str:
     ).all()
 
     if not products:
-        return (
-            "Sorry, no items are available today. "
-            "Please check back tomorrow!"
-        )
+        return "Sorry, no items are available today. Please check back tomorrow!"
 
     # Group by category for readability
     from collections import defaultdict
+
     by_category: dict[str, list[Product]] = defaultdict(list)
     for p in products:
         cat_name = p.category.name.capitalize() if p.category else "Other"
@@ -261,3 +297,57 @@ def _build_order_status(db: Session, customer: Customer) -> str:
         status_label=label,
         footer=STATUS_FOOTER[latest.status],
     )
+
+
+MSG_REORDER_LINK = (
+    "Tap here to confirm or adjust your last order:\n"
+    "\n"
+    "{link}\n"
+    "\n"
+    "_The link expires in 30 minutes._"
+)
+
+MSG_REORDER_NO_HISTORY = (
+    "You don't have any previous orders yet.\n"
+    "\n"
+    "Reply *new order* to place your first one!"
+)
+
+MSG_NEW_ORDER_LINK = (
+    "Tap here to pick today's items:\n\n{link}\n\n_The link expires in 30 minutes._"
+)
+
+
+def _build_reorder_link(db: Session, customer: Customer) -> str:
+    """Issue a 'reorder' token and return the WhatsApp message with the link.
+
+    If the customer has no prior orders, skip token issuance and tell them
+    to start fresh instead — issuing a link that opens an empty cart for a
+    'reorder' page would be confusing.
+    """
+    # Check for prior orders first
+    from app.models.order import Order, OrderStatus
+
+    last = db.scalar(
+        select(Order)
+        .where(Order.customer_id == customer.id)
+        .where(Order.is_draft.is_(False))
+        .where(Order.status != OrderStatus.cancelled)
+        .order_by(Order.created_at.desc())
+        .limit(1)
+    )
+    if last is None:
+        return MSG_REORDER_NO_HISTORY
+
+    from app.services import web_link_service
+
+    link, _ = web_link_service.issue_link(db, customer=customer, kind="reorder")
+    return MSG_REORDER_LINK.format(link=link)
+
+
+def _build_new_order_link(db: Session, customer: Customer) -> str:
+    """Issue a 'new' token and return the WhatsApp message with the link."""
+    from app.services import web_link_service
+
+    link, _ = web_link_service.issue_link(db, customer=customer, kind="new")
+    return MSG_NEW_ORDER_LINK.format(link=link)
