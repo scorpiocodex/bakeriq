@@ -52,6 +52,26 @@ services:
         condition: service_healthy
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  worker:
+    build:
+      context: ./backend
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    container_name: bakeriq-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      watchmedo auto-restart --directory=./app --pattern=*.py --recursive -- celery -A app.core.celery_app worker --loglevel=info -E -n bakeriq-worker@%h --concurrency=2
+
   frontend:
     build:
       context: ./frontend

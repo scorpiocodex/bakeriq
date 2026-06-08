@@ -30,22 +30,15 @@ from app.core.twilio_client import verify_twilio_signature
 from app.services import (
     conversation_log,
     customer_handler,
-    pending_registration_service as pr_svc,
     registration_handler,
+)
+from app.services import (
+    pending_registration_service as pr_svc,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
-
-
-# Placeholder for the LLM safety-valve path until Task 6 wires it up.
-# Returning this synchronously means the customer sees "I'll think about
-# this" while the Celery worker (Task 6) sends the real reply moments
-# later via the REST API.
-LLM_PLACEHOLDER_REPLY = (
-    "Let me check on that — give me a moment."
-)
 
 
 @router.post(
@@ -96,20 +89,53 @@ async def twilio_inbound(
     # === Dispatch ===
     reply = _dispatch(db, phone, body, customer, pending)
 
+    if reply is None:
+        # LLM safety valve takes over. Enqueue the Celery worker —
+        # it'll parse, match, write a cart, and send the outbound
+        # asynchronously via Twilio's REST API.
+        #
+        # We commit FIRST so the inbound message + conversation row
+        # are visible to the worker (which uses its own session). The
+        # outbound from the worker logs itself.
+        db.commit()
+
+        from app.tasks.llm import parse_and_send
+
+        # Customer is guaranteed non-None when reply is None — only
+        # Case 3 (registered customer) reaches the LLM branch.
+        assert customer is not None
+        parse_and_send.delay(
+            customer_id=str(customer.id),
+            conversation_id=str(conversation.id),
+            phone=phone,
+            body=body,
+        )
+        # Empty TwiML — Twilio sends nothing in immediate reply, the
+        # async send arrives shortly after.
+        return _empty_twiml_response()
+
     # === Log the outbound ===
-    # twilio_sid is unknown for synchronous TwiML replies — Twilio assigns
-    # it on delivery but doesn't return it to us in this response cycle.
-    # The audit row still gets written; we just don't have the SID.
     conversation_log.log_outbound_message(
         db,
         conversation_id=conversation.id,
         body=reply,
         twilio_sid=None,
     )
-
     db.commit()
 
     return _twiml_response(reply)
+
+
+def _empty_twiml_response() -> Response:
+    """TwiML response with no message body.
+
+    Used when the LLM safety valve will deliver the reply asynchronously
+    via Twilio's REST API — we still have to give Twilio a valid TwiML
+    response to the webhook, just one that doesn't include a <Message>
+    tag. Twilio accepts this and sends nothing immediately.
+    """
+    twiml = '<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>'
+    return Response(content=twiml, media_type="application/xml")
 
 
 def _dispatch(
@@ -118,7 +144,7 @@ def _dispatch(
     body: str,
     customer,
     pending,
-) -> str:
+) -> str | None:
     """Pick the right handler and return its reply text.
 
     Decision order:
@@ -141,17 +167,21 @@ def _dispatch(
         return registration_handler.handle_registration_message(db, phone, body)
 
     # Case 3: known customer → fast-path or LLM
+    # Case 3: known customer → fast-path or LLM
     if customer:
         reply = customer_handler.handle_customer_message(db, customer, body)
         if reply is None:
-            # Hand-off point to LLM safety valve. Task 6 will dispatch a
-            # Celery job here. For now we send the placeholder and the
-            # real bot reply path will come later.
+            # Hand-off point to LLM safety valve. Returning None tells
+            # the caller to enqueue the Celery task and send empty
+            # TwiML — the LLM worker will deliver the real reply
+            # asynchronously via Twilio's REST API.
             logger.info(
                 "LLM safety-valve hit: customer_id=%s phone=%s body=%r",
-                customer.id, phone, body,
+                customer.id,
+                phone,
+                body,
             )
-            return LLM_PLACEHOLDER_REPLY
+            return None
         return reply
 
     # Case 4: truly unknown phone → start registration

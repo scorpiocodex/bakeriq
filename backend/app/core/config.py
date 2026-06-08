@@ -36,6 +36,21 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
 
+    # Celery uses Redis as both broker and result backend. Separate DB
+    # numbers from the main Redis cache (DB 0) so a celery flush doesn't
+    # nuke conversation state. DB 1 = broker, DB 2 = results.
+    CELERY_BROKER_URL: str = "redis://redis:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
+
+    # Ollama runs natively on the host, reached via the Docker bridge
+    # gateway IP from inside containers. See .env for full reasoning.
+    OLLAMA_BASE_URL: str = "http://172.17.0.1:11434"
+
+    # Pinned model. Bump this deliberately when we want to upgrade —
+    # silent version drift would change parsing behavior without
+    # anyone noticing.
+    OLLAMA_MODEL: str = "llama3.2:3b"
+
     # Twilio (WhatsApp via sandbox in dev, real Sender in prod)
     TWILIO_ACCOUNT_SID: str
     TWILIO_AUTH_TOKEN: str
