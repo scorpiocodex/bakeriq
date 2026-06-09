@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: str
     TWILIO_WHATSAPP_FROM: str = "whatsapp:+14155238886"  # Sandbox default
 
+    # Content Template SIDs — populated by
+    # scripts/bootstrap_content_templates.py. None by default so the
+    # api/worker boot cleanly on a fresh checkout; the bootstrap script
+    # must be run before the WhatsApp button flows work.
+    CONTENT_SID_GREETING: str | None = None
+    CONTENT_SID_NAV: str | None = None
+    CONTENT_SID_CART_LINK: str | None = None
+    CONTENT_SID_FALLBACK: str | None = None
+
     # Public base URL Twilio uses
     PUBLIC_BASE_URL: str = "http://localhost:8000"
 

@@ -8,16 +8,20 @@ For each inbound WhatsApp message:
   3. Get or create the Conversation row in Postgres (audit trail anchor).
   4. Log the inbound message.
   5. Decide which handler runs:
-     - Pending registration in 'pending' status → registration handler
+     - Pending registration in 'pending' or 'rejected' status → registration handler
      - Recognised Customer → customer handler
      - Unknown phone → registration handler (will create the row)
-  6. Send the reply via TwiML (synchronous; Twilio delivers it).
-  7. Log the outbound reply.
+  6. Send the reply via one of two paths:
+     - TwiML synchronous (single text reply, e.g. registration flow)
+     - REST API (multi-message or template-bearing replies, e.g. any
+       customer_handler match that uses bakeriq_* Content Templates)
+  7. Log the outbound reply (TwiML path does this here; REST API path
+     logs internally inside the sender functions).
 
-LLM safety valve (Task 6) sits in step 6 — if the customer handler
-returns None (no fast-path match), we hand off to Celery and reply with
-a placeholder for now. The Celery worker will send the real reply via
-the REST API once it has the LLM response.
+LLM safety valve: if the customer handler returns None (no fast-path
+match), we hand off to Celery and reply with empty TwiML. The Celery
+worker will send the real reply via the REST API once it has the LLM
+response.
 """
 
 import logging
@@ -31,10 +35,12 @@ from app.services import (
     conversation_log,
     customer_handler,
     registration_handler,
+    whatsapp_sender,
 )
 from app.services import (
     pending_registration_service as pr_svc,
 )
+from app.services.reply import Reply
 
 logger = logging.getLogger(__name__)
 
@@ -87,9 +93,9 @@ async def twilio_inbound(
     )
 
     # === Dispatch ===
-    reply = _dispatch(db, phone, body, customer, pending)
+    replies = _dispatch(db, phone, body, customer, pending)
 
-    if reply is None:
+    if replies is None:
         # LLM safety valve takes over. Enqueue the Celery worker —
         # it'll parse, match, write a cart, and send the outbound
         # asynchronously via Twilio's REST API.
@@ -101,8 +107,8 @@ async def twilio_inbound(
 
         from app.tasks.llm import parse_and_send
 
-        # Customer is guaranteed non-None when reply is None — only
-        # Case 3 (registered customer) reaches the LLM branch.
+        # Customer is guaranteed non-None when replies is None — only
+        # the customer_handler branch can return None.
         assert customer is not None
         parse_and_send.delay(
             customer_id=str(customer.id),
@@ -114,25 +120,44 @@ async def twilio_inbound(
         # async send arrives shortly after.
         return _empty_twiml_response()
 
-    # === Log the outbound ===
-    conversation_log.log_outbound_message(
+    # === Pick delivery channel ===
+    # Single text reply → TwiML (saves a Twilio API round-trip; still
+    # the fast path for the registration flow and any one-shot text
+    # responses). Multi-reply or anything carrying a content_sid → REST
+    # API, because TwiML can't carry a Content Template.
+    if len(replies) == 1 and not replies[0].is_template:
+        reply = replies[0]
+        assert reply.body is not None
+        conversation_log.log_outbound_message(
+            db,
+            conversation_id=conversation.id,
+            body=reply.body,
+            twilio_sid=None,
+        )
+        db.commit()
+        return _twiml_response(reply.body)
+
+    # Multi-message or template path: send each via REST API. Sender
+    # logs each outbound to conversation_messages internally, so we
+    # only need to commit once at the end.
+    whatsapp_sender.send_replies(
         db,
         conversation_id=conversation.id,
-        body=reply,
-        twilio_sid=None,
+        to_phone=phone,
+        replies=replies,
     )
     db.commit()
-
-    return _twiml_response(reply)
+    return _empty_twiml_response()
 
 
 def _empty_twiml_response() -> Response:
     """TwiML response with no message body.
 
-    Used when the LLM safety valve will deliver the reply asynchronously
-    via Twilio's REST API — we still have to give Twilio a valid TwiML
-    response to the webhook, just one that doesn't include a <Message>
-    tag. Twilio accepts this and sends nothing immediately.
+    Used when the reply was already delivered out-of-band (via the REST
+    API, either by send_replies in this handler or by the LLM safety
+    valve in a Celery worker) — we still have to give Twilio a valid
+    TwiML response to the webhook, just one that doesn't include a
+    <Message> tag. Twilio accepts this and sends nothing immediately.
     """
     twiml = '<?xml version="1.0" encoding="UTF-8"?>\n<Response></Response>'
     return Response(content=twiml, media_type="application/xml")
@@ -144,33 +169,31 @@ def _dispatch(
     body: str,
     customer,
     pending,
-) -> str | None:
-    """Pick the right handler and return its reply text.
+) -> list[Reply] | None:
+    """Pick the right handler and return its reply.
+
+    Returns:
+        list[Reply] — handler matched; webhook delivers each reply.
+        None       — only when customer_handler had no fast-path match;
+                     webhook hands off to LLM safety valve.
 
     Decision order:
-      1. Customer + still has a 'pending' registration row (unusual,
-         shouldn't happen at runtime) → fall through to customer_handler.
-         The pending row is residual; the customer is approved.
-      2. Pending registration in 'pending' status → registration_handler.
-         Includes 'rejected' status which the handler also covers.
-      3. Customer recognised by phone → customer_handler, with LLM
-         placeholder fallback if the handler returns None.
-      4. Truly unknown phone → registration_handler (creates the row).
+      1. Pending registration in 'pending' or 'rejected' status →
+         registration_handler (returns plain text, wrapped here in a
+         single Reply.text — keeps registration on the TwiML fast path).
+      2. Customer recognised by phone → customer_handler (already
+         returns list[Reply] | None).
+      3. Truly unknown phone → registration_handler (also wrapped).
     """
-    # Case 1: pending in pending status → registration flow drives this
-    if pending and pending.status == "pending":
-        return registration_handler.handle_registration_message(db, phone, body)
+    # Case 1+2: pending registration (handler covers both 'pending' and 'rejected')
+    if pending and pending.status in ("pending", "rejected"):
+        text = registration_handler.handle_registration_message(db, phone, body)
+        return [Reply.text(text)]
 
-    # Case 2: rejected pending registration → registration_handler will
-    # return the rejected message
-    if pending and pending.status == "rejected":
-        return registration_handler.handle_registration_message(db, phone, body)
-
-    # Case 3: known customer → fast-path or LLM
     # Case 3: known customer → fast-path or LLM
     if customer:
-        reply = customer_handler.handle_customer_message(db, customer, body)
-        if reply is None:
+        replies = customer_handler.handle_customer_message(db, customer, body)
+        if replies is None:
             # Hand-off point to LLM safety valve. Returning None tells
             # the caller to enqueue the Celery task and send empty
             # TwiML — the LLM worker will deliver the real reply
@@ -182,10 +205,11 @@ def _dispatch(
                 body,
             )
             return None
-        return reply
+        return replies
 
     # Case 4: truly unknown phone → start registration
-    return registration_handler.handle_registration_message(db, phone, body)
+    text = registration_handler.handle_registration_message(db, phone, body)
+    return [Reply.text(text)]
 
 
 def _twiml_response(message: str) -> Response:

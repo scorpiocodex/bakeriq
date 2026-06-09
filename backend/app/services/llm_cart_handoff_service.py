@@ -8,17 +8,27 @@ MatchedItem (UUID + name + quantity). This module:
   1. Writes those items to the Redis cart cache, keyed by a freshly
      issued web_session_token (kind='new').
   2. Builds the public web URL the customer will tap.
-  3. Composes the WhatsApp reply text — itemised summary, total,
-     explicit list of dropped items, the link.
+  3. Composes the parse-confirmation prose — itemised summary, total,
+     explicit list of dropped items.
 
 What this module does NOT do:
-  - Actually send the WhatsApp message. The dispatcher in Substep 6
-    takes the built text and hands it to the Twilio outbound service.
-    Keeping the send separate means this whole pipeline is testable
-    without mocking Twilio.
+  - Actually send the WhatsApp message. The caller (tasks/llm.py)
+    constructs a list[Reply] from HandoffResult.summary_body plus a
+    cart-link Content Template Reply, and dispatches via
+    whatsapp_sender.send_replies.
   - Decide what to do when there's nothing matched AND nothing
-    dropped. That's the dispatcher's call — it'll fall back to the
-    "Sorry, I didn't catch that" generic message.
+    dropped. That's the caller's call — it'll fall back to a generic
+    "didn't catch that" message + nav buttons.
+
+Output split (Substep 5 onwards):
+  - HandoffResult.summary_body is the parse confirmation only (items,
+    total, dropped names). Sent as a text Reply.
+  - HandoffResult.link + .token feed into a cart-link Content Template
+    Reply that carries the Open cart button.
+  - HandoffResult.message_text is retained for backward compatibility
+    (kept building it so existing tests and any debug tooling that
+    expects the legacy full-text shape keep working). Production code
+    no longer reads it.
 
 Why we re-fetch products in here rather than relying on the matcher
 having attached prices to MatchedItem:
@@ -50,48 +60,59 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class HandoffResult:
-    """What this service returns to the dispatcher."""
+    """What this service returns to the caller.
+
+    Fields:
+        token: Web session token; substituted into the cart-link
+            template's URL placeholder via {{1}}.
+        link: Full public cart URL (e.g. https://.../web/new/<token>).
+            Used by the cart-link template fallback and audit log.
+        summary_body: Parse-confirmation prose — itemised summary,
+            total, and dropped names if any. Does NOT include the
+            cart link itself; the cart-link Content Template carries
+            the call-to-action button separately.
+        message_text: Legacy: full text-only message body with the
+            link appended. Retained for backward compatibility; new
+            callers should use summary_body + a cart-link template.
+        matched_count: Number of items successfully matched and
+            written to the cart. 0 means nothing matched — callers
+            usually send a friendlier fallback in that case.
+        dropped_names: LLM-extracted names that didn't match anything.
+            Included in summary_body when non-empty.
+    """
 
     token: str
     link: str
-    message_text: str  # ready to send via Twilio
-    matched_count: int  # 0 means nothing matched — dispatcher may
-    # choose to send the fallback instead
+    summary_body: str
+    message_text: str
+    matched_count: int
     dropped_names: list[str]
 
 
 def _format_price(amount: Decimal) -> str:
-    """Render a Decimal as an INR price string with no rupee symbol —
-    Twilio messages render the rupee symbol inconsistently across
-    phones, and '120.00' is unambiguous. Keep two decimal places
-    for consistency with the web app."""
+    """Render a Decimal as an INR price string. Two decimal places for
+    consistency with the web app."""
     return f"₹{amount:.2f}"
 
 
-def _build_message_text(
+def _build_summary_body(
     items_with_price: list[tuple[MatchedItem, Decimal]],
     dropped_names: list[str],
-    link: str,
 ) -> str:
-    """Compose the WhatsApp reply.
+    """Compose the LLM parse-confirmation body.
+
+    Does NOT include the cart-link prompt or URL; the caller sends this
+    prose followed by a separate cart-link Content Template message
+    (which carries the Open cart button).
 
     Format:
-      I understood your order:
-      • Veg Puff × 2 — ₹50.00
-      • Ladoo × 1 — ₹20.00
+        I understood your order:
+        • Veg Puff × 2 — ₹50.00
+        • Ladoo × 1 — ₹20.00
 
-      Total: ₹70.00
+        Total: ₹70.00
 
-      Sorry, I couldn't find: samosa     (omitted if no drops)
-
-      Tap to review and confirm:
-      <link>
-
-    Why itemise with prices in the message rather than just linking:
-      - Reassures the customer the bot understood them
-      - Gives them total upfront before they tap (no bait-and-switch)
-      - Surfaces dropped items so they're not surprised something's
-        missing when they open the web app
+        Sorry, I couldn't find: samosa     (omitted if no drops)
     """
     lines = ["I understood your order:"]
     total = Decimal("0.00")
@@ -111,11 +132,23 @@ def _build_message_text(
         unique_dropped = sorted(set(dropped_names))
         lines.append(f"Sorry, I couldn't find: {', '.join(unique_dropped)}")
 
-    lines.append("")
-    lines.append("Tap to review and confirm:")
-    lines.append(link)
-
     return "\n".join(lines)
+
+
+def _build_message_text(
+    items_with_price: list[tuple[MatchedItem, Decimal]],
+    dropped_names: list[str],
+    link: str,
+) -> str:
+    """Legacy: build full text-only message with the link appended.
+
+    Retained for backward compatibility — existing callers / tests that
+    read HandoffResult.message_text continue to work. Production code
+    (post Substep 5) uses HandoffResult.summary_body + sends the cart
+    link as a separate Content Template message.
+    """
+    body = _build_summary_body(items_with_price, dropped_names)
+    return body + "\n\nTap to review and confirm:\n" + link
 
 
 def handoff_to_web(
@@ -125,7 +158,7 @@ def handoff_to_web(
     matched: list[MatchedItem],
     dropped_names: list[str],
 ) -> HandoffResult:
-    """Write a pre-populated cart, issue a token, build the reply text.
+    """Write a pre-populated cart, issue a token, build the reply prose.
 
     Args:
         db: active SQLAlchemy session (caller manages lifecycle).
@@ -135,11 +168,8 @@ def handoff_to_web(
             shown to the customer so they know what's missing.
 
     Returns:
-        HandoffResult with the token, link, ready-to-send message text,
-        and counts. If matched is empty, message_text will still be
-        valid (just no items + only the dropped list), but the caller
-        should usually replace it with a friendlier fallback in that
-        case — we still return the structure so the caller can decide.
+        HandoffResult with the token, link, summary body, message text
+        (legacy), and counts.
     """
     # Issue a 'new'-kind token. The customer lands on the same web
     # page they'd see if they'd tapped "New order" — only difference
@@ -184,6 +214,7 @@ def handoff_to_web(
         },
     )
 
+    summary_body = _build_summary_body(items_with_price, dropped_names)
     message_text = _build_message_text(items_with_price, dropped_names, link)
 
     logger.info(
@@ -195,6 +226,7 @@ def handoff_to_web(
     return HandoffResult(
         token=token,
         link=link,
+        summary_body=summary_body,
         message_text=message_text,
         matched_count=len(items_with_price),
         dropped_names=dropped_names,

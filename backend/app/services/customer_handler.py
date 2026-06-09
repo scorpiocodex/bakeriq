@@ -1,10 +1,10 @@
 """Returning-customer handler — bot logic for registered customers.
 
-Entry point: handle_customer_message(db, customer, body) returns a reply.
-Caller is the webhook dispatcher.
+Entry point: handle_customer_message(db, customer, body) returns either
+a list of Reply objects to send back, or None if no fast-path keyword
+matched (caller routes to the LLM safety valve).
 
-Fast-path keyword matching only — no LLM call from this layer. Anything
-that doesn't match falls through to the LLM safety valve (Task 6).
+Fast-path keyword matching only — no LLM call from this layer.
 
 Routing happens in two layers:
 
@@ -14,20 +14,29 @@ Routing happens in two layers:
 
   2. Stateless keyword: greetings, menu queries, status queries — these
      work regardless of conversation state and are the most common
-     inbound messages.
+     inbound messages. Also matches the verbatim button labels delivered
+     by the bakeriq_* Content Templates.
 
-A non-match returns None — the caller routes that to the LLM safety
-valve. Returning None vs an empty string is intentional: empty string
-would still get sent as a (blank) reply.
+Most handlers return [text_reply, nav_reply] — a prose answer followed
+by the bakeriq_nav template with three tappable buttons (Reorder last /
+New order / Order status). Reorder/new-order link replies use the
+bakeriq_cart_link template instead. Template-related Reply factories
+live in app.services.template_replies so the LLM safety-valve path in
+tasks/llm.py can produce the same UX.
 """
+
+from collections import defaultdict
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.customer import Customer
 from app.models.order import Order, OrderStatus
 from app.models.product import Product
 from app.services import conversation_state as conv_state
+from app.services.reply import Reply
+from app.services.template_replies import cart_link_reply, nav_reply
 
 # === Keyword sets ===
 # Keep these as frozenset for O(1) lookup. Lowercased on the way in;
@@ -69,12 +78,15 @@ STATUS_KEYWORDS = frozenset(
     }
 )
 
-# Three buttons in the returning-customer menu. The button LABELS sent
-# from Twilio are what come back as message body when tapped — match
-# exactly.
+# Button labels — these are the exact strings Twilio delivers as Body
+# when a customer taps a quick-reply button on a bakeriq_* Content
+# Template. Lowercased for matching. If you change a button title in
+# scripts/bootstrap_content_templates.py you MUST change the matching
+# constant here too — the dispatcher relies on string equality.
 BUTTON_REORDER_LAST = "reorder last"
 BUTTON_NEW_ORDER = "new order"
 BUTTON_ORDER_STATUS = "order status"
+BUTTON_MENU = "menu"  # used in the bakeriq_fallback template
 
 CONFIRM_KEYWORDS = frozenset(
     {
@@ -108,48 +120,19 @@ MODIFY_KEYWORDS = frozenset(
 )
 
 
-# === Reply templates ===
-
-GREETING_PERIOD_TIMES = {
-    "morning": "Good morning",
-    "afternoon": "Good afternoon",
-    "evening": "Good evening",
-}
-
-
-def _time_of_day_greeting() -> str:
-    """Return time-appropriate greeting ('Good morning' etc) based on the
-    bakery's local time."""
-    from datetime import datetime
-
-    h = datetime.now().hour
-    if h < 12:
-        return GREETING_PERIOD_TIMES["morning"]
-    if h < 17:
-        return GREETING_PERIOD_TIMES["afternoon"]
-    return GREETING_PERIOD_TIMES["evening"]
-
-
-MSG_GREETING_REGISTERED = (
-    "{greeting} {name}!\n"
-    "\n"
-    "The bakery is open today. What would you like to do?\n"
-    "\n"
-    "Reply with:\n"
-    "• *Reorder last* — your previous order, ready to confirm\n"
-    "• *New order* — pick fresh items\n"
-    "• *Order status* — check your latest order"
-)
+# === Reply text fragments ===
+# Static prose; template bodies live in Twilio and are referenced by
+# CONTENT_SID_* settings.
 
 MSG_ORDER_STATUS_TEMPLATE = (
     "*Order #{short_id}*\nPlaced: {placed}\n\n{status_emoji} {status_label}\n\n{footer}"
 )
 
-MSG_NO_ORDERS = (
-    "You don't have any orders with us yet.\n"
-    "\n"
-    "Reply *new order* to place your first one!"
-)
+MSG_NO_ORDERS = "You don't have any orders with us yet."
+
+MSG_REORDER_NO_HISTORY = "You don't have any previous orders yet."
+
+MSG_NO_ITEMS_TODAY = "Sorry, no items are available today. Please check back tomorrow!"
 
 STATUS_DISPLAY = {
     OrderStatus.received: ("📥", "Received — we're getting started"),
@@ -164,7 +147,7 @@ STATUS_FOOTER = {
     OrderStatus.preparing: "You'll get a message when it's ready.",
     OrderStatus.ready: "Out for delivery very soon.",
     OrderStatus.delivering: "Should arrive any moment.",
-    OrderStatus.cancelled: "Send *new order* if you'd like to place another.",
+    OrderStatus.cancelled: "Tap *New order* below if you'd like to place another.",
 }
 
 
@@ -175,11 +158,12 @@ def handle_customer_message(
     db: Session,
     customer: Customer,
     body: str,
-) -> str | None:
+) -> list[Reply] | None:
     """Handle an inbound message from a registered customer.
 
-    Returns the bot's reply text, OR None if the message didn't match
-    any fast-path keyword (caller should route to LLM safety valve).
+    Returns a non-empty list of Reply objects to send back, OR None if
+    the message didn't match any fast-path keyword (caller should route
+    to LLM safety valve).
     """
     text = body.strip().lower()
 
@@ -193,12 +177,16 @@ def handle_customer_message(
         if text in MODIFY_KEYWORDS:
             return None  # Same
 
-    # === Stateless keyword matches ===
+    # === Stateless keyword + button matches ===
 
     if text in GREETINGS or _matches_phrase(text, GREETINGS):
         return _build_greeting(customer)
 
-    if text in MENU_KEYWORDS or _matches_phrase(text, MENU_KEYWORDS):
+    if (
+        text in MENU_KEYWORDS
+        or _matches_phrase(text, MENU_KEYWORDS)
+        or text == BUTTON_MENU
+    ):
         return _build_menu(db)
 
     if text in STATUS_KEYWORDS or text == BUTTON_ORDER_STATUS:
@@ -221,27 +209,49 @@ def _matches_phrase(text: str, keywords: frozenset[str]) -> bool:
     """Loose match: 'hi anita how are you' matches the 'hi' keyword.
 
     Cheaper than full NLP — just checks if the message starts with any
-    keyword, or is short enough that the keyword is the meaningful part.
+    keyword.
     """
-    # Single-word check: if text is one word, exact match against the set.
-    # If multi-word, check the first word matches.
     first_word = text.split(maxsplit=1)[0] if text else ""
     return first_word in keywords
 
 
-def _build_greeting(customer: Customer) -> str:
-    """Greeting reply with menu prompt — used for first contact of a
-    session with a registered customer."""
-    # Use first name only for the greeting (more natural).
+def _build_greeting(customer: Customer) -> list[Reply]:
+    """Personalized greeting with three nav buttons.
+
+    Uses the bakeriq_greeting Content Template — body is "Hi {{1}}! How
+    can we help today?" with three quick-reply buttons. Falls back to
+    plain text + a separate nav template if the greeting SID isn't
+    bootstrapped.
+
+    Note: the previous text-only version varied "Good morning / afternoon
+    / evening" by time of day. Content Templates are static at the body
+    level, so we lose that variation — could be restored later with
+    three time-variant templates if it becomes a requirement.
+    """
     first_name = customer.name.split()[0] if customer.name else "there"
-    return MSG_GREETING_REGISTERED.format(
-        greeting=_time_of_day_greeting(),
-        name=first_name,
-    )
+    sid = settings.CONTENT_SID_GREETING
+    if sid is None:
+        return [
+            Reply.text(f"Hi {first_name}! How can we help today?"),
+            nav_reply(),
+        ]
+    return [
+        Reply.template(
+            sid,
+            variables={"1": first_name},
+            log_body=f"Hi {first_name}! How can we help today?",
+        ),
+    ]
 
 
-def _build_menu(db: Session) -> str:
-    """Today's available products, grouped by category."""
+def _build_menu(db: Session) -> list[Reply]:
+    """Today's available products, grouped by category, plus nav buttons.
+
+    Returns one Reply with the menu prose and a second Reply with the
+    bakeriq_nav template. If no items are available today, returns only
+    the apology — offering nav buttons in that case would lead the
+    customer into a flow that can't be completed.
+    """
     products = db.scalars(
         select(Product)
         .where(Product.is_active.is_(True))
@@ -250,11 +260,9 @@ def _build_menu(db: Session) -> str:
     ).all()
 
     if not products:
-        return "Sorry, no items are available today. Please check back tomorrow!"
+        return [Reply.text(MSG_NO_ITEMS_TODAY)]
 
     # Group by category for readability
-    from collections import defaultdict
-
     by_category: dict[str, list[Product]] = defaultdict(list)
     for p in products:
         cat_name = p.category.name.capitalize() if p.category else "Other"
@@ -267,12 +275,15 @@ def _build_menu(db: Session) -> str:
             lines.append(f"• {p.name} — ₹{p.unit_price:.0f} / {p.unit_label}")
         lines.append("")
 
-    lines.append("Reply *new order* to start ordering.")
-    return "\n".join(lines)
+    # Drop trailing blank line so the message ends cleanly
+    while lines and lines[-1] == "":
+        lines.pop()
+
+    return [Reply.text("\n".join(lines)), nav_reply()]
 
 
-def _build_order_status(db: Session, customer: Customer) -> str:
-    """Most recent non-draft order's status, or 'no orders' if none.
+def _build_order_status(db: Session, customer: Customer) -> list[Reply]:
+    """Most recent non-draft order's status, plus nav buttons.
 
     'Non-draft' filter is important — bot-created in-flight orders that
     haven't been confirmed yet shouldn't be reported back to the customer
@@ -287,47 +298,25 @@ def _build_order_status(db: Session, customer: Customer) -> str:
     )
 
     if latest is None:
-        return MSG_NO_ORDERS
+        return [Reply.text(MSG_NO_ORDERS), nav_reply()]
 
     emoji, label = STATUS_DISPLAY[latest.status]
-    return MSG_ORDER_STATUS_TEMPLATE.format(
+    text = MSG_ORDER_STATUS_TEMPLATE.format(
         short_id=str(latest.id)[:8],
         placed=latest.created_at.strftime("%I:%M %p, %d %b"),
         status_emoji=emoji,
         status_label=label,
         footer=STATUS_FOOTER[latest.status],
     )
+    return [Reply.text(text), nav_reply()]
 
 
-MSG_REORDER_LINK = (
-    "Tap here to confirm or adjust your last order:\n"
-    "\n"
-    "{link}\n"
-    "\n"
-    "_The link expires in 30 minutes._"
-)
+def _build_reorder_link(db: Session, customer: Customer) -> list[Reply]:
+    """Issue a 'reorder' token and return a cart-link template message.
 
-MSG_REORDER_NO_HISTORY = (
-    "You don't have any previous orders yet.\n"
-    "\n"
-    "Reply *new order* to place your first one!"
-)
-
-MSG_NEW_ORDER_LINK = (
-    "Tap here to pick today's items:\n\n{link}\n\n_The link expires in 30 minutes._"
-)
-
-
-def _build_reorder_link(db: Session, customer: Customer) -> str:
-    """Issue a 'reorder' token and return the WhatsApp message with the link.
-
-    If the customer has no prior orders, skip token issuance and tell them
-    to start fresh instead — issuing a link that opens an empty cart for a
-    'reorder' page would be confusing.
+    If the customer has no prior orders, returns a "no history" text
+    reply plus nav buttons rather than issuing a link to an empty cart.
     """
-    # Check for prior orders first
-    from app.models.order import Order, OrderStatus
-
     last = db.scalar(
         select(Order)
         .where(Order.customer_id == customer.id)
@@ -337,17 +326,19 @@ def _build_reorder_link(db: Session, customer: Customer) -> str:
         .limit(1)
     )
     if last is None:
-        return MSG_REORDER_NO_HISTORY
+        return [Reply.text(MSG_REORDER_NO_HISTORY), nav_reply()]
 
     from app.services import web_link_service
 
     link, _ = web_link_service.issue_link(db, customer=customer, kind="reorder")
-    return MSG_REORDER_LINK.format(link=link)
+    token = link.rsplit("/", 1)[-1]
+    return [cart_link_reply(token, link)]
 
 
-def _build_new_order_link(db: Session, customer: Customer) -> str:
-    """Issue a 'new' token and return the WhatsApp message with the link."""
+def _build_new_order_link(db: Session, customer: Customer) -> list[Reply]:
+    """Issue a 'new' token and return a cart-link template message."""
     from app.services import web_link_service
 
     link, _ = web_link_service.issue_link(db, customer=customer, kind="new")
-    return MSG_NEW_ORDER_LINK.format(link=link)
+    token = link.rsplit("/", 1)[-1]
+    return [cart_link_reply(token, link)]
