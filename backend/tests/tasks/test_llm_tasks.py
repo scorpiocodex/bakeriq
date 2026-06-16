@@ -1,32 +1,38 @@
-"""Tests for the Celery LLM tasks — Medium rigor.
+"""Tests for the Celery LLM tasks.
 
-We test the FUNCTION body of parse_and_send by calling the underlying
-function directly (the @celery_app.task decorator preserves the
-original — we access it via .run()). This skips the broker
-entirely — we're not testing Celery itself, we're testing our
-business logic.
+We test the FUNCTION body of parse_and_send by calling it directly via
+.run() — the @celery_app.task decorator preserves the underlying
+function. This skips the broker entirely; we test our business logic,
+not Celery.
 
-We mock at two boundaries:
-  - Ollama (external API)
-  - Twilio outbound (external API + side-effects)
+Mocks at two external boundaries:
+  - Ollama (parse step)
+  - Twilio (outbound send — patched at the task's import boundary)
 
-Everything else (matcher, handoff, cart write, DB log) runs for real
-so we get coverage of the full integration without flakiness from
-network calls.
+Everything else (matcher, handoff service, cart write to Redis, DB
+session) runs for real, giving us full integration coverage without
+network flakiness.
 
-Coverage:
-  Branch selection (3): handoff message when matched, nothing-available
-                        when only dropped, no-match when both empty
-  Side effects (2): outbound is sent, cart lands in Redis on handoff
-  Customer missing (1): graceful no-op if the customer was deleted
+Coverage (post Substep 5 — list[Reply] shape):
+  Branch selection (3): handoff Reply pair when matched; nothing-available
+                        Reply pair when only dropped; no-match Reply pair
+                        when both empty.
+  Reply structure (2): handoff produces text + cart_link_template;
+                       no-match/nothing-available produce text + nav/fallback
+                       templates.
+  Side effects (2): outbound is sent to the correct phone; matched
+                    branch leaves a populated cart in Redis.
+  Customer missing (1): graceful no-op if the customer was deleted between
+                        webhook and worker pickup.
 
-Total: 6 tests.
+Total: 8 tests.
 """
 
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
+from app.core.config import settings
 from app.models.category import Category
 from app.models.conversation import Conversation
 from app.models.customer import Customer
@@ -39,6 +45,11 @@ from app.tasks.llm import (
 )
 
 PHONE = "+919888777555"
+
+
+# ============================================================
+# Fixtures
+# ============================================================
 
 
 @pytest.fixture
@@ -123,6 +134,11 @@ def _redirect_task_session_to_test_db(monkeypatch):
     monkeypatch.setattr("app.tasks.llm.SessionLocal", TestSessionLocal)
 
 
+# ============================================================
+# Helpers
+# ============================================================
+
+
 def _mock_ollama_returning(json_content: str) -> MagicMock:
     """Build a mock Ollama client that returns the given JSON string."""
     mock_client = MagicMock()
@@ -130,24 +146,33 @@ def _mock_ollama_returning(json_content: str) -> MagicMock:
     return mock_client
 
 
-# === BRANCH SELECTION ===
-# The task picks one of three messages based on (matched, dropped):
-#   matched>0          → handoff cart-summary message
-#   matched=0, dropped>0 → "nothing available today" fallback
-#   matched=0, dropped=0 → generic "didn't catch that" fallback
+def _get_sent_replies(mock_send_replies: MagicMock) -> list:
+    """Extract the `replies` kwarg from the (single) send_replies call."""
+    mock_send_replies.assert_called_once()
+    return mock_send_replies.call_args.kwargs["replies"]
 
 
-@patch("app.services.whatsapp_sender.send_text")
+def _get_sent_phone(mock_send_replies: MagicMock) -> str:
+    """Extract the `to_phone` kwarg from the (single) send_replies call."""
+    return mock_send_replies.call_args.kwargs["to_phone"]
+
+
+# ============================================================
+# Branch selection — verifies which Reply shape each outcome produces
+# ============================================================
+
+
+@patch("app.tasks.llm.whatsapp_sender.send_replies")
 @patch("app.services.llm_parser_service.get_client")
 def test_handoff_branch_when_matched(
     mock_get_client,
-    mock_send_text,
+    mock_send_replies,
     db_session,
     customer,
     conversation,
     stub_products,
 ):
-    """Items matched → handoff message with cart summary."""
+    """Items matched → [parse_confirmation_text, cart_link_template]."""
     mock_get_client.return_value = _mock_ollama_returning(
         '{"items": [{"product_name": "Veg Puff", "quantity": 2}]}'
     )
@@ -164,25 +189,38 @@ def test_handoff_branch_when_matched(
     assert result["matched"] == 1
     assert result["dropped"] == 0
 
-    # send_text was called with the handoff message text
-    mock_send_text.assert_called_once()
-    sent_body = mock_send_text.call_args.kwargs["body"]
-    assert "Veg Puff × 2" in sent_body
-    assert "Total:" in sent_body
-    assert "Tap to review" in sent_body
+    replies = _get_sent_replies(mock_send_replies)
+    assert len(replies) == 2
+
+    # First reply: parse confirmation prose (text Reply, no SID)
+    text_reply = replies[0]
+    assert text_reply.content_sid is None
+    assert text_reply.body is not None
+    assert "Veg Puff" in text_reply.body
+    assert "× 2" in text_reply.body
+    assert "Total:" in text_reply.body
+    # Crucially: no cart-link prose. That moved into the template.
+    assert "Tap to review" not in text_reply.body
+
+    # Second reply: cart-link Content Template with token in variables["1"]
+    template_reply = replies[1]
+    assert template_reply.content_sid == settings.CONTENT_SID_CART_LINK
+    assert template_reply.content_variables is not None
+    assert "1" in template_reply.content_variables
 
 
-@patch("app.services.whatsapp_sender.send_text")
+@patch("app.tasks.llm.whatsapp_sender.send_replies")
 @patch("app.services.llm_parser_service.get_client")
 def test_nothing_available_branch_when_only_dropped(
     mock_get_client,
-    mock_send_text,
+    mock_send_replies,
     db_session,
     customer,
     conversation,
     stub_products,
 ):
-    """LLM understood food intent but nothing matched → 'nothing available'."""
+    """LLM understood food intent but nothing matched →
+    [MSG_NOTHING_AVAILABLE_text, fallback_template] (Menu button)."""
     mock_get_client.return_value = _mock_ollama_returning(
         '{"items": [{"product_name": "Tiramisu", "quantity": 1}]}'
     )
@@ -198,21 +236,28 @@ def test_nothing_available_branch_when_only_dropped(
     assert result["matched"] == 0
     assert result["dropped"] == 1
 
-    mock_send_text.assert_called_once()
-    assert mock_send_text.call_args.kwargs["body"] == MSG_NOTHING_AVAILABLE
+    replies = _get_sent_replies(mock_send_replies)
+    assert len(replies) == 2
+
+    text_reply = replies[0]
+    assert text_reply.body == MSG_NOTHING_AVAILABLE
+
+    # fallback_reply uses CONTENT_SID_FALLBACK (Menu / New / Status buttons)
+    template_reply = replies[1]
+    assert template_reply.content_sid == settings.CONTENT_SID_FALLBACK
 
 
-@patch("app.services.whatsapp_sender.send_text")
+@patch("app.tasks.llm.whatsapp_sender.send_replies")
 @patch("app.services.llm_parser_service.get_client")
 def test_no_match_branch_when_both_empty(
     mock_get_client,
-    mock_send_text,
+    mock_send_replies,
     db_session,
     customer,
     conversation,
     stub_products,
 ):
-    """No order intent at all → generic fallback."""
+    """No order intent at all → [MSG_NO_MATCH_text, nav_template]."""
     mock_get_client.return_value = _mock_ollama_returning('{"items": []}')
 
     result = parse_and_send.run(
@@ -226,26 +271,34 @@ def test_no_match_branch_when_both_empty(
     assert result["matched"] == 0
     assert result["dropped"] == 0
 
-    mock_send_text.assert_called_once()
-    assert mock_send_text.call_args.kwargs["body"] == MSG_NO_MATCH
+    replies = _get_sent_replies(mock_send_replies)
+    assert len(replies) == 2
+
+    text_reply = replies[0]
+    assert text_reply.body == MSG_NO_MATCH
+
+    # nav_reply uses CONTENT_SID_NAV (Reorder / New / Status buttons)
+    template_reply = replies[1]
+    assert template_reply.content_sid == settings.CONTENT_SID_NAV
 
 
-# === SIDE EFFECTS ===
+# ============================================================
+# Side effects
+# ============================================================
 
 
-@patch("app.services.whatsapp_sender.send_text")
+@patch("app.tasks.llm.whatsapp_sender.send_replies")
 @patch("app.services.llm_parser_service.get_client")
 def test_send_to_phone_matches_arg(
     mock_get_client,
-    mock_send_text,
+    mock_send_replies,
     db_session,
     customer,
     conversation,
     stub_products,
 ):
-    """The outbound message goes to the phone we passed in, not the
-    customer's stored phone (which could differ if the inbound came
-    from a secondary number)."""
+    """Outbound goes to the `phone` arg, not customer.primary_phone (which
+    could differ if the inbound came from a secondary number)."""
     mock_get_client.return_value = _mock_ollama_returning('{"items": []}')
 
     parse_and_send.run(
@@ -255,23 +308,25 @@ def test_send_to_phone_matches_arg(
         body="hello",
     )
 
-    mock_send_text.assert_called_once()
-    assert mock_send_text.call_args.kwargs["to_phone"] == "+919999000000"
+    assert _get_sent_phone(mock_send_replies) == "+919999000000"
 
 
-@patch("app.services.whatsapp_sender.send_text")
+@patch("app.tasks.llm.whatsapp_sender.send_replies")
 @patch("app.services.llm_parser_service.get_client")
 def test_handoff_writes_cart_to_redis(
     mock_get_client,
-    mock_send_text,
+    mock_send_replies,
     db_session,
     customer,
     conversation,
     stub_products,
 ):
-    """The handoff branch leaves a populated cart in Redis. We verify by
-    parsing the outbound message to find the token (32-char trailing
-    URL segment) and looking it up directly."""
+    """Handoff branch leaves a populated cart in Redis.
+
+    We pull the token directly from the cart-link Reply's
+    content_variables — the URL no longer appears in prose since the
+    template carries it.
+    """
     mock_get_client.return_value = _mock_ollama_returning(
         '{"items": [{"product_name": "Ladoo", "quantity": 3}]}'
     )
@@ -283,10 +338,13 @@ def test_handoff_writes_cart_to_redis(
         body="3 ladoo",
     )
 
-    sent_body = mock_send_text.call_args.kwargs["body"]
-    # Token is the last 32 chars after the final slash in the message
-    token = sent_body.rsplit("/", 1)[-1].strip()
-    assert len(token) == 32
+    replies = _get_sent_replies(mock_send_replies)
+    template_reply = replies[1]
+    assert template_reply.content_variables is not None
+    token = template_reply.content_variables["1"]
+    # Tokens are URL-safe random strings (web_link_service uses secrets.token_urlsafe)
+    assert isinstance(token, str)
+    assert len(token) > 8
 
     cart = cart_cache.get_cart(token)
     assert cart is not None
@@ -295,19 +353,21 @@ def test_handoff_writes_cart_to_redis(
     assert cart["items"][0]["quantity"] == 3
 
 
-# === CUSTOMER MISSING ===
+# ============================================================
+# Customer missing
+# ============================================================
 
 
-@patch("app.services.whatsapp_sender.send_text")
+@patch("app.tasks.llm.whatsapp_sender.send_replies")
 @patch("app.services.llm_parser_service.get_client")
 def test_customer_not_found_returns_early(
     mock_get_client,
-    mock_send_text,
+    mock_send_replies,
     db_session,
     conversation,
 ):
-    """Customer was deleted between webhook and worker pickup — the task
-    logs and bails rather than crashing or sending a confusing reply."""
+    """Customer deleted between webhook and worker pickup — task logs
+    and bails rather than crashing or sending a confusing reply."""
     fake_customer_id = "00000000-0000-0000-0000-000000000000"
 
     result = parse_and_send.run(
@@ -320,4 +380,4 @@ def test_customer_not_found_returns_early(
     assert result == {"status": "customer_not_found"}
     # LLM not called, no outbound attempted
     mock_get_client.assert_not_called()
-    mock_send_text.assert_not_called()
+    mock_send_replies.assert_not_called()
