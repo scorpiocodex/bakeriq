@@ -42,8 +42,8 @@
   // Join the docker-compose network so this container can reach the
   // running api/db/redis services by their service names. Adjust the
   // network name if your `docker compose ps` shows a different one
-  // (typically `<project-folder>_default` — for you, `bakeriq_default`)
-  "runArgs": ["--network=bakeriq_default"],
+  // (typically `<project-folder>_default` — for you, `bakeriq`)
+  "runArgs": ["--network=bakeriq"],
 
   // Mount the repo. The default mount is fine, but we set workspaceFolder
   // explicitly for clarity in terminal paths
@@ -116,7 +116,7 @@
         // === Editor — matches your user settings
         "editor.fontFamily": "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, 'Courier New', monospace",
         "editor.fontLigatures": true,
-        "editor.fontSize": 20,
+        "editor.fontSize": 14,
         "editor.lineHeight": 1.6,
         "editor.formatOnSave": true,
         "editor.formatOnPaste": false,
