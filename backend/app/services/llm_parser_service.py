@@ -13,7 +13,8 @@ Architecture:
   - Product matching to actual Product rows happens DOWNSTREAM in
     product_matcher_service (Substep 4). This module just gets the
     LLM's interpretation of names + quantities; the matcher decides
-    which real product each name refers to.
+    which real product each name refers to, and tracks ones that
+    don't match for the "nothing_available" branch.
 
 Why this split (LLM vs matcher):
   - LLM is good at language understanding ("2 veg puff" → name='veg puff',
@@ -22,6 +23,11 @@ Why this split (LLM vs matcher):
     consults the real Product table + aliases and picks the best match
     or returns None for ambiguous cases.
   - Splitting them keeps each module testable in isolation.
+  - Critically: the LLM extracts EVERY item the customer named,
+    including ones not on the catalog. The matcher decides which are
+    available. Earlier versions of this prompt asked the LLM to
+    pre-filter; that erased the signal we need to route "nothing
+    available today" feedback to the customer.
 
 Error cases:
   - LLM returns valid JSON but nothing useful → empty parsed_items list,
@@ -76,15 +82,26 @@ def _build_system_prompt(products: list[Product]) -> str:
       - Keeps the user message clean for the actual customer text,
         which makes debugging easier.
 
-    Aliases matter: 'veg puff' is what customers say, but the product
-    in the DB might be 'Veg Puff' or have aliases like ['vegetable puff',
-    'veg patty']. The LLM should pick the canonical name we list here
-    so the downstream matcher's job is easy.
+    The catalog is shown to the LLM for two reasons:
+      1. Vocabulary anchoring — the LLM aligns product names it
+         outputs to the canonical spellings, so the downstream matcher
+         finds them by exact match without needing fuzzy logic.
+      2. Aliases — 'vegetable puff' the customer typed should come
+         back as 'Veg Puff' if that's the alias config.
 
-    Few-shot examples in the prompt cover the failure modes we saw in
-    early testing: Llama 3.2 3B mishandles Manglish quantity words
-    ('oru' = 1) and hallucinates off-menu items unless explicitly
-    shown otherwise.
+    Importantly the catalog is NOT a filter the LLM should apply.
+    Whether an extracted item is actually orderable is the matcher's
+    job (product_matcher_service). The LLM's job is to extract what the
+    customer SAID — including off-menu requests — and let the matcher
+    decide what to do with each one. The "nothing available today"
+    customer-facing message depends on the matcher seeing the off-menu
+    items in the LLM's output.
+
+    Few-shot examples cover the failure modes we saw in early testing:
+    Llama 3.2 3B mishandles Manglish quantity words ('oru' = 1) and
+    earlier versions of this prompt over-filtered off-menu items,
+    causing the safety-valve to lose signal about what the customer
+    actually requested.
     """
     product_lines = []
     for p in products:
@@ -97,9 +114,9 @@ def _build_system_prompt(products: list[Product]) -> str:
 
     return f"""You are an order-parsing assistant for a small Indian bakery called BakeriQ.
 
-Your job: read a customer's free-text WhatsApp message and extract what they want to order. The message may be in English, Malayalam, Manglish (Malayalam written in English letters), or a mix. Customers are casual — they write things like "2 veg puff and a ladoo please" or "3 chicken puff venam".
+Your job: read a customer's free-text WhatsApp message and extract every food item they asked for. The message may be in English, Malayalam, Manglish (Malayalam written in English letters), or a mix. Customers are casual — they write things like "2 veg puff and a ladoo please" or "3 chicken puff venam".
 
-Today's available products:
+Today's product catalog (for vocabulary reference only):
 {catalog}
 
 Quantity word reference (Malayalam/Manglish → number):
@@ -110,10 +127,11 @@ Quantity word reference (Malayalam/Manglish → number):
   - anju, ainju = 5
 
 Rules:
-1. Use the EXACT product names from the catalog above. If a customer says "veg puff" and the catalog has "Veg Puff", output "Veg Puff".
-2. Quantity must be a positive integer. Words like "a", "one", "oru" mean 1. Numerals override words ("2 puff" is 2, not whatever "puff" might imply).
-3. If the customer asks for something NOT in the catalog above, OMIT it entirely. Do NOT include it in your output. Do NOT substitute it for something similar. Just drop it.
-4. If the message contains no clear order intent (greeting, question, complaint, chitchat), return an empty items list.
+1. Extract EVERY food item the customer asks for, even if it does not appear in the catalog above. A separate downstream system checks availability; your job is faithful extraction, not filtering.
+2. If an item the customer mentions matches a name (or alias) in the catalog, use the canonical name from the catalog. Example: customer says "vegetable puff", catalog has "Veg Puff" — output "Veg Puff".
+3. If an item is not in the catalog, output the customer's wording in title case. Example: customer says "samosa", output "Samosa". Do NOT invent items the customer didn't mention.
+4. Quantity must be a positive integer. Words like "a", "one", "oru" mean 1. Numerals always override words.
+5. If the message contains no food items at all (greeting, question, complaint, chitchat), return an empty items list.
 
 Examples:
 
@@ -123,13 +141,16 @@ Output: {{"items": [{{"product_name": "Veg Puff", "quantity": 2}}, {{"product_na
 Customer: "oru chicken puff venam"
 Output: {{"items": [{{"product_name": "Chicken Puff", "quantity": 1}}]}}
 
-Customer: "2 samosa and 1 ladoo"  (samosa is NOT in the catalog)
-Output: {{"items": [{{"product_name": "Ladoo", "quantity": 1}}]}}
+Customer: "2 veg puff and 1 samosa"  (samosa not in catalog — still extract it)
+Output: {{"items": [{{"product_name": "Veg Puff", "quantity": 2}}, {{"product_name": "Samosa", "quantity": 1}}]}}
+
+Customer: "1 samosa and 1 pizza"  (neither in catalog — still extract both)
+Output: {{"items": [{{"product_name": "Samosa", "quantity": 1}}, {{"product_name": "Pizza", "quantity": 1}}]}}
 
 Customer: "hi how are you"
 Output: {{"items": []}}
 
-Customer: "do you have brownies?"  (no order intent, just a question)
+Customer: "do you have brownies?"  (a question, not an order — empty)
 Output: {{"items": []}}
 
 Return only the JSON object matching the schema."""
