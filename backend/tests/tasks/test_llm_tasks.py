@@ -31,6 +31,7 @@ Total: 8 tests.
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from app.core.config import settings
 from app.models.category import Category
@@ -41,8 +42,11 @@ from app.services import cart_cache
 from app.tasks.llm import (
     MSG_NO_MATCH,
     MSG_NOTHING_AVAILABLE,
+    MSG_SERVICE_DEGRADED,
+    RETRY_EXCEPTIONS,
     parse_and_send,
 )
+from ollama import RequestError, ResponseError
 
 PHONE = "+919888777555"
 
@@ -176,6 +180,7 @@ def test_handoff_branch_when_matched(
     mock_get_client.return_value = _mock_ollama_returning(
         '{"items": [{"product_name": "Veg Puff", "quantity": 2}]}'
     )
+    mock_send_replies.return_value = ["SM_text", "SM_template"]
 
     result = parse_and_send.run(
         customer_id=str(customer.id),
@@ -224,6 +229,7 @@ def test_nothing_available_branch_when_only_dropped(
     mock_get_client.return_value = _mock_ollama_returning(
         '{"items": [{"product_name": "Tiramisu", "quantity": 1}]}'
     )
+    mock_send_replies.return_value = ["SM_text", "SM_template"]
 
     result = parse_and_send.run(
         customer_id=str(customer.id),
@@ -259,6 +265,7 @@ def test_no_match_branch_when_both_empty(
 ):
     """No order intent at all → [MSG_NO_MATCH_text, nav_template]."""
     mock_get_client.return_value = _mock_ollama_returning('{"items": []}')
+    mock_send_replies.return_value = ["SM_text", "SM_template"]
 
     result = parse_and_send.run(
         customer_id=str(customer.id),
@@ -300,6 +307,7 @@ def test_send_to_phone_matches_arg(
     """Outbound goes to the `phone` arg, not customer.primary_phone (which
     could differ if the inbound came from a secondary number)."""
     mock_get_client.return_value = _mock_ollama_returning('{"items": []}')
+    mock_send_replies.return_value = ["SM_text", "SM_template"]
 
     parse_and_send.run(
         customer_id=str(customer.id),
@@ -330,6 +338,7 @@ def test_handoff_writes_cart_to_redis(
     mock_get_client.return_value = _mock_ollama_returning(
         '{"items": [{"product_name": "Ladoo", "quantity": 3}]}'
     )
+    mock_send_replies.return_value = ["SM_text", "SM_template"]
 
     parse_and_send.run(
         customer_id=str(customer.id),
@@ -381,3 +390,241 @@ def test_customer_not_found_returns_early(
     # LLM not called, no outbound attempted
     mock_get_client.assert_not_called()
     mock_send_replies.assert_not_called()
+
+
+class TestRetryConfig:
+    """Static checks on the @celery_app.task decoration. These guard
+    against narrowing the retry tuple inadvertently — a single PR
+    could re-introduce silent message loss otherwise."""
+
+    def test_retry_tuple_includes_ollama_exceptions(self):
+        """The two ollama-SDK exception classes must trigger autoretry."""
+        assert ResponseError in RETRY_EXCEPTIONS
+        assert RequestError in RETRY_EXCEPTIONS
+
+    def test_retry_tuple_includes_httpx_connection_errors(self):
+        """The three httpx exceptions we observed in production logs
+        (Ollama down, slow cold-load, container-firewall blocking)
+        must trigger autoretry."""
+
+        from app.tasks.llm import RETRY_EXCEPTIONS
+
+        assert httpx.ConnectError in RETRY_EXCEPTIONS
+        assert httpx.ConnectTimeout in RETRY_EXCEPTIONS
+        assert httpx.ReadTimeout in RETRY_EXCEPTIONS
+
+    def test_parse_and_send_decorator_uses_retry_tuple(self):
+        """The decorated task should expose autoretry_for as a
+        superset of RETRY_EXCEPTIONS — Celery may wrap or extend it,
+        but our classes must all be present."""
+        from app.tasks.llm import RETRY_EXCEPTIONS, parse_and_send
+
+        # Celery stores this as a tuple of classes on the task object.
+        decorated = set(parse_and_send.autoretry_for)
+        expected = set(RETRY_EXCEPTIONS)
+        assert expected.issubset(decorated), (
+            f"parse_and_send.autoretry_for is missing exception classes: "
+            f"{expected - decorated}"
+        )
+
+    def test_parse_and_send_has_max_retries_set(self):
+        """Explicit max_retries — defends against the Celery default
+        silently changing across upgrades, and documents intent."""
+        from app.tasks.llm import parse_and_send
+
+        # max_retries lives on the task class, not the function
+        assert parse_and_send.max_retries == 3
+
+
+# ============================================================
+# Honest send-status reporting (the logging-bug fix)
+# ============================================================
+
+
+class TestSendStatusReporting:
+    """The result dict's status field should reflect what actually
+    reached Twilio, not just whether the pipeline completed. Old
+    behavior: always status=sent even when both Twilio calls returned
+    None. New behavior: classify based on the send_replies result."""
+
+    def test_classifier_all_sent(self):
+        from app.tasks.llm import _classify_send_results
+
+        assert _classify_send_results(["SM1", "SM2"]) == "sent"
+
+    def test_classifier_all_failed(self):
+        from app.tasks.llm import _classify_send_results
+
+        assert _classify_send_results([None, None]) == "all_sends_failed"
+
+    def test_classifier_partial_failure(self):
+        from app.tasks.llm import _classify_send_results
+
+        assert _classify_send_results(["SM1", None]) == "partial_send_failure"
+        assert _classify_send_results([None, "SM2"]) == "partial_send_failure"
+
+    def test_classifier_empty_list(self):
+        """Defensive: an empty list should NOT report 'sent' just
+        because vacuously-all-sids-are-not-None is True."""
+        from app.tasks.llm import _classify_send_results
+
+        assert _classify_send_results([]) == "all_sends_failed"
+
+    @patch("app.tasks.llm.whatsapp_sender.send_replies")
+    @patch("app.services.llm_parser_service.get_client")
+    def test_all_sends_failed_reports_honestly(
+        self,
+        mock_get_client,
+        mock_send_replies,
+        db_session,
+        customer,
+        conversation,
+        stub_products,
+    ):
+        """Twilio rejected both messages (e.g. quota exhausted) → the
+        result dict must say so, not claim 'sent'."""
+        mock_get_client.return_value = _mock_ollama_returning('{"items": []}')
+        mock_send_replies.return_value = [None, None]
+
+        result = parse_and_send.run(
+            customer_id=str(customer.id),
+            conversation_id=str(conversation.id),
+            phone=PHONE,
+            body="hello",
+        )
+
+        assert result["status"] == "all_sends_failed"
+        assert result["outcome"] == "no_match"
+        assert result["sids"] == [None, None]
+
+    @patch("app.tasks.llm.whatsapp_sender.send_replies")
+    @patch("app.services.llm_parser_service.get_client")
+    def test_partial_send_failure_reports_honestly(
+        self,
+        mock_get_client,
+        mock_send_replies,
+        db_session,
+        customer,
+        conversation,
+        stub_products,
+    ):
+        """First message sent, second failed → partial_send_failure."""
+        mock_get_client.return_value = _mock_ollama_returning('{"items": []}')
+        mock_send_replies.return_value = ["SM_first_succeeded", None]
+
+        result = parse_and_send.run(
+            customer_id=str(customer.id),
+            conversation_id=str(conversation.id),
+            phone=PHONE,
+            body="hello",
+        )
+
+        assert result["status"] == "partial_send_failure"
+        assert result["sids"] == ["SM_first_succeeded", None]
+
+    @patch("app.tasks.llm.whatsapp_sender.send_replies")
+    @patch("app.services.llm_parser_service.get_client")
+    def test_successful_send_still_reports_sent(
+        self,
+        mock_get_client,
+        mock_send_replies,
+        db_session,
+        customer,
+        conversation,
+        stub_products,
+    ):
+        """Regression check — the existing happy path still works."""
+        mock_get_client.return_value = _mock_ollama_returning(
+            '{"items": [{"product_name": "Veg Puff", "quantity": 2}]}'
+        )
+        mock_send_replies.return_value = ["SM_text", "SM_template"]
+
+        result = parse_and_send.run(
+            customer_id=str(customer.id),
+            conversation_id=str(conversation.id),
+            phone=PHONE,
+            body="2 veg puff",
+        )
+
+        assert result["status"] == "sent"
+        assert result["outcome"] == "handoff"
+
+
+# ============================================================
+# Retry-exhaustion fallback (MSG_SERVICE_DEGRADED path)
+# ============================================================
+
+
+class TestRetryExhaustedFallback:
+    """When retries are exhausted (MaxRetriesExceededError surfaces
+    from the autoretry layer), the task fires MSG_SERVICE_DEGRADED so
+    the customer is informed rather than stuck in silence."""
+
+    @patch("app.tasks.llm.whatsapp_sender.send_replies")
+    @patch("app.tasks.llm.parse_message")
+    def test_retry_exhausted_fires_service_degraded(
+        self,
+        mock_parse_message,
+        mock_send_replies,
+        db_session,
+        customer,
+        conversation,
+    ):
+        """Simulate retry exhaustion by raising MaxRetriesExceededError
+        from the parse step. The task should catch it and send
+        MSG_SERVICE_DEGRADED + nav_reply."""
+        from celery.exceptions import MaxRetriesExceededError
+
+        mock_parse_message.side_effect = MaxRetriesExceededError()
+        mock_send_replies.return_value = ["SM_degraded", "SM_nav"]
+
+        result = parse_and_send.run(
+            customer_id=str(customer.id),
+            conversation_id=str(conversation.id),
+            phone=PHONE,
+            body="i want 2 veg puff",
+        )
+
+        assert result["status"] == "fallback_after_retry_exhausted"
+        assert result["outcome"] == "service_degraded"
+
+        # The fallback path uses its own DB session — verify it called
+        # send_replies once with MSG_SERVICE_DEGRADED.
+        mock_send_replies.assert_called_once()
+        sent_replies = mock_send_replies.call_args.kwargs["replies"]
+        assert len(sent_replies) == 2
+        assert sent_replies[0].body == MSG_SERVICE_DEGRADED
+        # Second reply is the nav template — assert it carries the
+        # right CONTENT_SID rather than relying on text fallback.
+        from app.core.config import settings
+
+        assert sent_replies[1].content_sid == settings.CONTENT_SID_NAV
+
+    @patch("app.tasks.llm.whatsapp_sender.send_replies")
+    @patch("app.tasks.llm.parse_message")
+    def test_retry_exhausted_with_twilio_also_failing(
+        self,
+        mock_parse_message,
+        mock_send_replies,
+        db_session,
+        customer,
+        conversation,
+    ):
+        """Worst case: retries exhausted AND the fallback Twilio call
+        also fails. We can't reach the customer at all; the task must
+        report this honestly (status=fallback_send_failed) so the
+        monitoring layer can alert."""
+        from celery.exceptions import MaxRetriesExceededError
+
+        mock_parse_message.side_effect = MaxRetriesExceededError()
+        mock_send_replies.return_value = [None, None]
+
+        result = parse_and_send.run(
+            customer_id=str(customer.id),
+            conversation_id=str(conversation.id),
+            phone=PHONE,
+            body="i want 2 veg puff",
+        )
+
+        assert result["status"] == "fallback_send_failed"
+        assert result["outcome"] == "service_degraded"
