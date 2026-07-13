@@ -34,6 +34,7 @@ from app.schemas.order import OrderCreate, OrderItemWrite
 from app.services import (
     cart_cache,
     order_service,
+    template_replies,
     token_service,
     whatsapp_sender,
 )
@@ -87,7 +88,7 @@ def _resolve_token_or_404(db: Session, token: str):
 
 
 def _build_menu(db: Session) -> list[dict]:
-    """Today's available products as JSON-serialisable dicts."""
+    """Today's available products as JSON-serializable dicts."""
     products = db.scalars(
         select(Product)
         .where(Product.is_active.is_(True))
@@ -343,24 +344,25 @@ def place_order(
         phone=customer.primary_phone,
         customer_id=customer.id,
     )
-    summary_lines = [
-        f"Order #{str(order.id)[:8]} confirmed!",
-        "",
-    ]
-    for item in items:
-        summary_lines.append(
-            f"• {item['quantity']} × {item['product_name']} — ₹{item['subtotal']:.0f}"
-        )
-    summary_lines.append("")
-    summary_lines.append(f"Total: ₹{order.total_amount:.0f}")
-    summary_lines.append("")
-    summary_lines.append("We'll send updates as your order progresses.")
 
-    whatsapp_sender.send_text(
+    # Build the itemized list for the template's {{2}} variable.
+    # Structured as one line per item; the template body wraps this
+    # in the "Order #X confirmed!" preamble and the total + status
+    # tail. See services/template_replies.order_confirmation_reply.
+    item_lines = [
+        f"• {item['quantity']} × {item['product_name']} — ₹{item['subtotal']:.0f}"
+        for item in items
+    ]
+    reply = template_replies.order_confirmation_reply(
+        short_id=str(order.id)[:8],
+        items_summary="\n".join(item_lines),
+        total=f"₹{order.total_amount:.0f}",
+    )
+    whatsapp_sender.send_reply(
         db,
         conversation_id=conversation.id,
         to_phone=customer.primary_phone,
-        body="\n".join(summary_lines),
+        reply=reply,
     )
     db.commit()
 

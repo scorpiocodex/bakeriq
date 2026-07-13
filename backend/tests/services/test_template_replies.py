@@ -15,6 +15,7 @@ from app.services.template_replies import (
     cart_link_reply,
     fallback_reply,
     nav_reply,
+    order_confirmation_reply,  # <-- add this
 )
 
 # ============================================================
@@ -212,3 +213,94 @@ class TestPartialSIDState:
 
         assert cart_link_reply("tok", "https://x.com").is_template is False
         assert fallback_reply().is_template is False
+
+
+# ============================================================
+# order_confirmation_reply
+# ============================================================
+
+
+class TestOrderConfirmationReply:
+    """order_confirmation_reply is used from cart.py after a customer
+    places an order via the web app. Preserves the same info as the
+    old free-text confirmation but adds tappable Order status /
+    Menu / New order buttons."""
+
+    def test_returns_template_when_sid_set(self, all_sids_set, monkeypatch):
+        monkeypatch.setattr(
+            settings,
+            "CONTENT_SID_ORDER_CONFIRMATION",
+            "HX_test_order_confirmation",
+        )
+        reply = order_confirmation_reply(
+            short_id="72211cfa",
+            items_summary="• 2 × Veg Puff — ₹36",
+            total="₹36",
+        )
+        assert reply.is_template is True
+        assert reply.content_sid == "HX_test_order_confirmation"
+        assert reply.content_variables == {
+            "1": "72211cfa",
+            "2": "• 2 × Veg Puff — ₹36",
+            "3": "₹36",
+        }
+
+    def test_falls_back_to_text_when_sid_none(self, all_sids_none, monkeypatch):
+        monkeypatch.setattr(settings, "CONTENT_SID_ORDER_CONFIRMATION", None)
+        reply = order_confirmation_reply(
+            short_id="72211cfa",
+            items_summary="• 2 × Veg Puff — ₹36",
+            total="₹36",
+        )
+        assert reply.is_template is False
+        assert reply.body is not None
+        # Fallback preserves all the same info the template would carry
+        assert "72211cfa" in reply.body
+        assert "Veg Puff" in reply.body
+        assert "₹36" in reply.body
+
+    def test_log_body_includes_all_variables(self, all_sids_set, monkeypatch):
+        """log_body is what appears in the admin transcript viewer.
+        Should render the full text form even when a template SID is
+        used — otherwise admins see just the SID in the log."""
+        monkeypatch.setattr(
+            settings,
+            "CONTENT_SID_ORDER_CONFIRMATION",
+            "HX_test_order_confirmation",
+        )
+        reply = order_confirmation_reply(
+            short_id="72211cfa",
+            items_summary="• 2 × Veg Puff — ₹36",
+            total="₹36",
+        )
+        assert reply.log_body is not None
+        assert "72211cfa" in reply.log_body
+        assert "Veg Puff" in reply.log_body
+        assert "₹36" in reply.log_body
+
+    def test_truncates_long_item_list(self, all_sids_set, monkeypatch):
+        """Defensive: Twilio has a ~1024-char per-variable limit.
+        Very large orders should truncate rather than fail the send."""
+        monkeypatch.setattr(
+            settings,
+            "CONTENT_SID_ORDER_CONFIRMATION",
+            "HX_test_order_confirmation",
+        )
+        # 50 lines, each ~30 chars = ~1500 chars total
+        item_lines = [f"• 1 × Test Item {i:02d} — ₹{i * 10}" for i in range(50)]
+        long_summary = "\n".join(item_lines)
+
+        reply = order_confirmation_reply(
+            short_id="72211cfa",
+            items_summary=long_summary,
+            total="₹5000",
+        )
+        # Template branch: the variable is truncated to a safe length
+        assert reply.content_variables is not None
+        truncated = reply.content_variables["2"]
+        assert len(truncated) < len(long_summary)
+        # Truncation should end with a "... and N more" tail
+        assert "more items" in truncated
+        # Full order id and total still present
+        assert reply.content_variables["1"] == "72211cfa"
+        assert reply.content_variables["3"] == "₹5000"

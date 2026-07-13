@@ -78,3 +78,66 @@ def fallback_reply() -> Reply:
         sid,
         log_body="Sorry, I couldn't process that. [Menu / New order / Order status]",
     )
+
+
+def order_confirmation_reply(
+    short_id: str,
+    items_summary: str,
+    total: str,
+) -> Reply:
+    """Post-order-placement Reply — order confirmation with buttons.
+
+    Sent from cart.py after a customer confirms & places an order
+    via the web app. Preserves the same information as the old
+    free-text confirmation (order id, itemized list, total,
+    status-update note) but adds tappable [Order status] [Menu]
+    [New order] buttons matching the rest of the bot UX.
+
+    items_summary: one line per item, newline-separated.
+        e.g. "• 2 × Veg Puff — ₹36\\n• 1 × Ladoo — ₹15"
+
+    Twilio has a practical ~1024-char cap per template variable.
+    Very large orders (say, 20+ line items) could theoretically
+    exceed that; we truncate defensively with a "... and N more"
+    tail rather than failing the send.
+    """
+    sid = settings.CONTENT_SID_ORDER_CONFIRMATION
+
+    # Defensive truncation. 1024 - overhead for other variables
+    # and body text — 800 gives comfortable headroom.
+    MAX_ITEMS_CHARS = 800
+    if len(items_summary) > MAX_ITEMS_CHARS:
+        # Find the last newline before the limit so we truncate
+        # on a whole-line boundary, not mid-item.
+        cutoff = items_summary.rfind("\n", 0, MAX_ITEMS_CHARS)
+        if cutoff == -1:
+            cutoff = MAX_ITEMS_CHARS
+        truncated_lines = items_summary[:cutoff].count("\n") + 1
+        total_lines = items_summary.count("\n") + 1
+        hidden = total_lines - truncated_lines
+        items_summary = items_summary[:cutoff] + f"\n... and {hidden} more items"
+
+    if sid is None:
+        # Fallback to free-text form matching pre-template UX.
+        body = (
+            f"Order #{short_id} confirmed!\n\n"
+            f"{items_summary}\n\n"
+            f"Total: {total}\n\n"
+            f"We'll send updates as your order progresses."
+        )
+        return Reply.text(body)
+
+    return Reply.template(
+        sid,
+        variables={
+            "1": short_id,
+            "2": items_summary,
+            "3": total,
+        },
+        log_body=(
+            f"Order #{short_id} confirmed!\n\n"
+            f"{items_summary}\n\n"
+            f"Total: {total}\n\n"
+            f"We'll send updates as your order progresses."
+        ),
+    )

@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     CONTENT_SID_NAV: str | None = None
     CONTENT_SID_CART_LINK: str | None = None
     CONTENT_SID_FALLBACK: str | None = None
+    CONTENT_SID_ORDER_CONFIRMATION: str | None = None
 
     # Public base URL Twilio uses
     PUBLIC_BASE_URL: str = "http://localhost:8000"

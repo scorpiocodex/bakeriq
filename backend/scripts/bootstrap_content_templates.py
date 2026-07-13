@@ -7,9 +7,10 @@ SIDs rather than creating duplicates. Writes/updates these lines in .env:
     CONTENT_SID_NAV=HX...
     CONTENT_SID_CART_LINK=HX...
     CONTENT_SID_FALLBACK=HX...
+    CONTENT_SID_ORDER_CONFIRMATION=HX...
 
 After running this, restart api + worker so pydantic-settings re-reads
-the new .env values, and confirm the four CONTENT_SID_* fields are
+the new .env values, and confirm the five CONTENT_SID_* fields are
 declared in backend/app/core/config.py.
 
 Usage:
@@ -135,6 +136,42 @@ def _create_fallback(client: TwilioContentClient) -> str:
     )
 
 
+def _create_order_confirmation(client: TwilioContentClient) -> str:
+    """Post-order-placement confirmation template.
+
+    Sent when the customer finalizes a cart via the web app.
+    Preserves the same information as the old free-text confirmation
+    (order id, itemized list, total, status update note) but adds
+    tappable buttons matching the rest of the bot's UX.
+
+    Variables:
+      {{1}} = short order id (first 8 chars of the UUID)
+      {{2}} = itemized list, one line per item, newline-separated
+              (e.g. "• 2 × Veg Puff — ₹36\\n• 1 × Ladoo — ₹15")
+      {{3}} = order total (e.g. "₹51")
+
+    On the itemized list ({{2}}): Twilio has per-variable length limits
+    (~1024 chars practical max for template variables). Orders with
+    many items risk truncation; template_replies.order_confirmation_reply
+    truncates with a "... and N more" tail if the list is too long.
+    """
+    return client.create_quick_reply(
+        friendly_name="bakeriq_order_confirmation",
+        body=(
+            "Order #{{1}} confirmed!\n\n"
+            "{{2}}\n\n"
+            "Total: {{3}}\n\n"
+            "We'll send updates as your order progresses."
+        ),
+        actions=[
+            QuickReplyAction(title=BTN_STATUS, id="btn_order_status"),
+            QuickReplyAction(title=BTN_MENU, id="btn_menu"),
+            QuickReplyAction(title=BTN_NEW, id="btn_new_order"),
+        ],
+        variables={"1": "order_id", "2": "items", "3": "total"},
+    )
+
+
 TEMPLATES: list[TemplateSpec] = [
     TemplateSpec(
         friendly_name="bakeriq_greeting",
@@ -155,6 +192,11 @@ TEMPLATES: list[TemplateSpec] = [
         friendly_name="bakeriq_fallback",
         env_var="CONTENT_SID_FALLBACK",
         creator=_create_fallback,
+    ),
+    TemplateSpec(
+        friendly_name="bakeriq_order_confirmation",
+        env_var="CONTENT_SID_ORDER_CONFIRMATION",
+        creator=_create_order_confirmation,
     ),
 ]
 
@@ -221,7 +263,7 @@ def main() -> int:
         for spec in TEMPLATES:
             if spec.friendly_name in existing_by_name:
                 sid = existing_by_name[spec.friendly_name]
-                print(f"  exists  {spec.friendly_name:20s} -> {sid}")
+                print(f"  exists  {spec.friendly_name:30s} -> {sid}")
             else:
                 try:
                     sid = spec.creator(client)
@@ -230,7 +272,7 @@ def main() -> int:
                         f"[error] creating {spec.friendly_name}: {e}", file=sys.stderr
                     )
                     return 1
-                print(f"  created {spec.friendly_name:20s} -> {sid}")
+                print(f"  created {spec.friendly_name:30s} -> {sid}")
             sids_to_write[spec.env_var] = sid
     finally:
         client.close()
@@ -253,7 +295,7 @@ def main() -> int:
     print("Next:")
     print("  1. Restart api + worker so pydantic-settings re-reads .env:")
     print("       docker compose restart api worker")
-    print("  2. Confirm the four CONTENT_SID_* fields are declared in")
+    print("  2. Confirm the five CONTENT_SID_* fields are declared in")
     print("     backend/app/core/config.py.")
     return 0
 
