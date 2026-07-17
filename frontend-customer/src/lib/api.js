@@ -33,3 +33,24 @@ export async function placeOrder(token, items) {
   const { data } = await api.post(`/api/v1/cart/${token}/place`, { items });
   return data;
 }
+
+/**
+ * GET /api/v1/register/{token}
+ * Returns { phone, already_registered } on success.
+ * Throws on 404 (no token) / 410 (consumed or expired) / 409 (edge case).
+ * Errors surface via axios error object with response.status and response.data.detail.
+ */
+export async function fetchRegistrationToken(token) {
+  const { data } = await api.get(`/api/v1/register/${token}`);
+  return data;
+}
+
+/**
+ * POST /api/v1/register/{token}
+ * Body: { name, address_line_1?, address_line_2?, city?, state?, pincode? }
+ * Returns { message, registration_id } on 200.
+ */
+export async function submitRegistration(token, payload) {
+  const { data } = await api.post(`/api/v1/register/${token}`, payload);
+  return data;
+}
