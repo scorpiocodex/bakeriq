@@ -6,6 +6,7 @@ from app.models.default_order import DefaultOrder, DefaultOrderItem
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.pending_registration import PendingRegistration
 from app.models.product import Product
+from app.models.registration_token import RegistrationToken  # noqa: F401
 from app.models.user import User
 from app.models.web_session_token import WebSessionToken
 
@@ -25,4 +26,5 @@ __all__ = [
     "Conversation",
     "ConversationMessage",
     "WebSessionToken",
+    "RegistrationToken",
 ]

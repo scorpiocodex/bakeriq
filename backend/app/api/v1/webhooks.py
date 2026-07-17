@@ -75,7 +75,7 @@ async def twilio_inbound(
 
     # === Identify the sender ===
     customer = conversation_log.find_customer_by_phone(db, phone)
-    pending = pr_svc.get_pending_by_phone(db, phone)
+    pending = pr_svc.get_by_phone(db, phone)
 
     # === Get or create the conversation ===
     conversation = conversation_log.get_or_create_conversation(
@@ -178,17 +178,18 @@ def _dispatch(
                      webhook hands off to LLM safety valve.
 
     Decision order:
-      1. Pending registration in 'pending' or 'rejected' status →
-         registration_handler (returns plain text, wrapped here in a
-         single Reply.text — keeps registration on the TwiML fast path).
-      2. Customer recognised by phone → customer_handler (already
-         returns list[Reply] | None).
-      3. Truly unknown phone → registration_handler (also wrapped).
+      1. Pending registration in 'awaiting_approval' or 'rejected' status →
+         registration_handler (returns list[Reply], typically the webform
+         CTA card, or a "still awaiting" text reply).
+      2. Customer recognised by phone → customer_handler (returns
+         list[Reply] | None; None triggers the LLM safety valve).
+      3. Truly unknown phone → registration_handler (issues a fresh
+         registration token + returns the webform CTA card).
     """
-    # Case 1+2: pending registration (handler covers both 'pending' and 'rejected')
-    if pending and pending.status in ("pending", "rejected"):
-        text = registration_handler.handle_registration_message(db, phone, body)
-        return [Reply.text(text)]
+    # Case 1+2: pending registration (handler covers both 'awaiting_approval' and 'rejected')
+    if pending and pending.status in ("awaiting_approval", "rejected"):
+        replies = registration_handler.handle_registration_message(db, phone, body)
+        return replies
 
     # Case 3: known customer → fast-path or LLM
     if customer:
@@ -208,8 +209,8 @@ def _dispatch(
         return replies
 
     # Case 4: truly unknown phone → start registration
-    text = registration_handler.handle_registration_message(db, phone, body)
-    return [Reply.text(text)]
+    replies = registration_handler.handle_registration_message(db, phone, body)
+    return replies
 
 
 def _twiml_response(message: str) -> Response:

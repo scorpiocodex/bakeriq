@@ -141,3 +141,27 @@ def order_confirmation_reply(
             f"We'll send updates as your order progresses."
         ),
     )
+
+
+def registration_link_reply(token: str, link: str) -> Reply:
+    """Registration webform link — sent when an unknown phone messages the bot.
+
+    Body: "Welcome to BakeriQ! Tap the button to register."
+    CTA:  Register now → link
+
+    Fallback if CONTENT_SID_REGISTRATION_LINK is unset (bootstrap not run):
+    plain text with the URL inline.
+    """
+    sid = settings.CONTENT_SID_REGISTRATION_LINK
+    if sid is None:
+        return Reply.text(
+            "Welcome to BakeriQ!\n\n"
+            "Tap this link to register:\n\n"
+            f"{link}\n\n"
+            "_The link expires in 12 hours._"
+        )
+    return Reply.template(
+        sid,
+        variables={"1": token},
+        log_body=f"Welcome to BakeriQ! Register now: {link}",
+    )

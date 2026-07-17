@@ -172,6 +172,16 @@ def _create_order_confirmation(client: TwilioContentClient) -> str:
     )
 
 
+def _create_registration_link(client: TwilioContentClient) -> str:
+    reg_url = settings.PUBLIC_BASE_URL.rstrip("/") + "/web/register/{{1}}"
+    return client.create_call_to_action(
+        friendly_name="bakeriq_registration_link",
+        body="Welcome to BakeriQ! Tap the button to register.",
+        actions=[UrlAction(title="Register now", url=reg_url)],
+        variables={"1": "token"},
+    )
+
+
 TEMPLATES: list[TemplateSpec] = [
     TemplateSpec(
         friendly_name="bakeriq_greeting",
@@ -197,6 +207,11 @@ TEMPLATES: list[TemplateSpec] = [
         friendly_name="bakeriq_order_confirmation",
         env_var="CONTENT_SID_ORDER_CONFIRMATION",
         creator=_create_order_confirmation,
+    ),
+    TemplateSpec(
+        friendly_name="bakeriq_registration_link",
+        env_var="CONTENT_SID_REGISTRATION_LINK",
+        creator=_create_registration_link,
     ),
 ]
 

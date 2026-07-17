@@ -1,124 +1,132 @@
-"""Pending Registration service — owner-approval workflow for new customers.
+"""PendingRegistration service — CRUD + approve/reject helpers.
 
-When an unknown phone first messages the bot, we don't immediately create
-a Customer row. Instead:
+Post-Phase 3.5 refactor: the bot state machine is gone. Pending rows
+are created directly from the webform submission (see
+registration_form_service) and moved through owner action from the
+approvals dashboard.
 
-  1. PendingRegistration created (status='pending', conversation_state
-     tracks where we are in the data-collection flow)
-  2. Bot collects name → area through 2 message turns
-  3. Bot tells customer "owner will approve shortly"
-  4. Owner approves in dashboard → real Customer row created here,
-     linked via PendingRegistration.customer_id, status flips to 'approved'
+Status values:
+  - 'awaiting_approval'  — created by the webform, waiting on owner
+  - 'approved'           — owner approved, Customer row created
+  - 'rejected'           — owner rejected, no Customer created
 
-This module owns the data layer for that workflow. The bot's actual
-message-handler logic lives in registration_handler.py.
+The row is retained for audit in both terminal states.
 """
 
-from datetime import datetime, timezone
-from uuid import UUID
+from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import datetime, timezone
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.customer import Customer
 from app.models.pending_registration import PendingRegistration
 
-
-# Sub-states within the registration flow itself. Distinct from the Redis
-# conversation_state which is broader (covers ordering too).
-SUBSTATE_COLLECTING_NAME = "collecting_name"
-SUBSTATE_COLLECTING_AREA = "collecting_area"
-SUBSTATE_AWAITING_APPROVAL = "awaiting_approval"
+STATUS_AWAITING = "awaiting_approval"
+STATUS_APPROVED = "approved"
+STATUS_REJECTED = "rejected"
 
 
-def get_pending_by_phone(db: Session, phone: str) -> PendingRegistration | None:
-    """Return the pending registration row for a phone, if any. None otherwise.
+def get_by_phone(db: Session, phone: str) -> PendingRegistration | None:
+    """Latest PendingRegistration row for a phone number.
 
-    Used by the webhook dispatcher to decide "is this an in-progress
-    registration?" before falling back to "is this a registered customer?"
+    'Latest' because a phone that was rejected could theoretically
+    submit a new registration; the newer row is the relevant one for
+    the current interaction.
     """
     return db.scalar(
-        select(PendingRegistration).where(PendingRegistration.phone == phone)
+        select(PendingRegistration)
+        .where(PendingRegistration.phone == phone)
+        .order_by(PendingRegistration.created_at.desc())
+        .limit(1)
     )
 
 
-def start_registration(db: Session, phone: str) -> PendingRegistration:
-    """Create a fresh pending_registration row for a previously-unknown phone.
+def get_awaiting_by_phone(db: Session, phone: str) -> PendingRegistration | None:
+    """Awaiting-approval row for a phone, or None.
 
-    The substate starts at collecting_name — the bot's next reply will
-    ask for the customer's name.
-
-    Raises an error if a row already exists. The caller is expected to
-    have checked first (via get_pending_by_phone).
+    Used to answer "does this phone have a registration in flight?"
+    without dragging in old rejected rows.
     """
-    existing = get_pending_by_phone(db, phone)
-    if existing is not None:
-        raise ValueError(
-            f"Pending registration already exists for phone {phone}; "
-            f"resume it instead of starting a new one."
+    return db.scalar(
+        select(PendingRegistration).where(
+            PendingRegistration.phone == phone,
+            PendingRegistration.status == STATUS_AWAITING,
         )
+    )
 
+
+def create_from_webform(
+    db: Session,
+    *,
+    phone: str,
+    name: str,
+    address_line_1: str | None = None,
+    address_line_2: str | None = None,
+    city: str | None = None,
+    state: str | None = None,
+    pincode: str | None = None,
+) -> PendingRegistration:
+    """Create a new pending registration directly from a webform submission.
+
+    Called by registration_form_service after the customer submits the
+    form. Status is set to 'awaiting_approval' immediately — there's
+    no intermediate state because the webform collected everything in
+    one shot.
+
+    The caller (form service) is responsible for validating the token
+    and preventing duplicate submissions.
+    """
     reg = PendingRegistration(
         phone=phone,
-        conversation_state=SUBSTATE_COLLECTING_NAME,
-        status="pending",
+        name=name.strip()[:100],
+        address_line_1=(address_line_1 or "").strip()[:200] or None,
+        address_line_2=(address_line_2 or "").strip()[:200] or None,
+        city=(city or "").strip()[:100] or None,
+        state=(state or "").strip()[:100] or None,
+        pincode=(pincode or "").strip()[:10] or None,
+        status=STATUS_AWAITING,
     )
     db.add(reg)
     db.flush()
     return reg
 
 
-def record_name(db: Session, reg: PendingRegistration, name: str) -> None:
-    """Save the customer's name and advance to the next substate."""
-    reg.name = name.strip()[:120]
-    reg.conversation_state = SUBSTATE_COLLECTING_AREA
-    db.flush()
+def approve(db: Session, reg: PendingRegistration) -> Customer:
+    """Owner approval path — creates the Customer row and links it.
 
+    Called by the /approvals dashboard endpoint. Field-copies the
+    registration data into a new Customer row and marks the pending
+    row as approved.
 
-def record_area(db: Session, reg: PendingRegistration, area: str) -> None:
-    """Save the customer's area and advance to awaiting-approval substate."""
-    reg.area = area.strip()[:200]
-    reg.conversation_state = SUBSTATE_AWAITING_APPROVAL
-    db.flush()
-
-
-def approve(
-    db: Session,
-    reg: PendingRegistration,
-) -> Customer:
-    """Owner approval path — converts pending_registration into a real Customer.
-
-    Called by the dashboard approval endpoint (Task 8). NOT called from
-    the bot handler directly.
-
-    Creates a Customer row with the collected name + phone, marks the
-    pending row as approved, and links them via customer_id. The bot's
-    next interaction with this customer will recognise them as registered.
+    The address fields map 1:1 into Customer (both models share the
+    same shape). notes gets a "how they joined" trail so the origin
+    is visible in the admin UI later.
     """
-    if reg.status != "pending":
+    if reg.status != STATUS_AWAITING:
         raise ValueError(f"Cannot approve registration in status {reg.status!r}")
-    if not reg.name or not reg.area:
+    if not reg.name:
         raise ValueError(
-            "Registration is incomplete; name and area must be provided "
-            "before approval."
+            "Registration is incomplete; name must be provided before approval."
         )
 
-    # Build the Customer row from what we've collected. The 'area' isn't
-    # a real address (more like a neighbourhood label — "MG Road", "Kakkanad")
-    # so it goes into notes. The owner fills in the proper address fields
-    # via the dashboard when they need to deliver — those fields are
-    # nullable specifically to support this two-stage flow.
     customer = Customer(
         name=reg.name,
         primary_phone=reg.phone,
         whatsapp_enabled=True,
-        notes=f"Auto-registered via WhatsApp. Area: {reg.area}",
+        address_line_1=reg.address_line_1,
+        address_line_2=reg.address_line_2,
+        city=reg.city,
+        state=reg.state,
+        pincode=reg.pincode,
+        notes="Auto-registered via WhatsApp webform",
         is_active=True,
     )
     db.add(customer)
-    db.flush()  # Need the customer.id for the link below
+    db.flush()
 
-    reg.status = "approved"
+    reg.status = STATUS_APPROVED
     reg.customer_id = customer.id
     reg.approved_at = datetime.now(timezone.utc)
     db.flush()
@@ -127,49 +135,58 @@ def approve(
 
 
 def reject(db: Session, reg: PendingRegistration) -> None:
-    """Owner rejection path — marks as rejected. Row stays for record.
+    """Owner rejection path — marks as rejected, no Customer created.
 
-    No customer is created. The bot's next interaction with this phone
-    will... currently treat them as a new unknown, which would restart
-    registration. We'll need to gate that in the bot handler — if a
-    rejected registration exists, the bot should politely decline rather
-    than restart. (Task 3 substep 4 will handle this.)
+    Rejected registrations stay in the table for audit. If the same
+    phone attempts a fresh registration later, the bot handler
+    (registration_handler) sees the rejected row via get_by_phone
+    and can decide how to respond (currently: politely decline).
     """
-    if reg.status != "pending":
+    if reg.status != STATUS_AWAITING:
         raise ValueError(f"Cannot reject registration in status {reg.status!r}")
-    reg.status = "rejected"
+    reg.status = STATUS_REJECTED
     db.flush()
 
 
-def list_pending(
+def list_awaiting(
     db: Session,
     *,
     skip: int = 0,
     limit: int = 50,
 ) -> tuple[list[PendingRegistration], int]:
-    """Pending registrations awaiting owner action.
+    """Registrations awaiting owner action, oldest-first.
 
-    Returns (rows, total_count). Status='pending' only — rejected and
-    approved rows aren't in the queue.
+    Returns (rows, total_count). Only 'awaiting_approval' — rejected
+    and approved rows aren't in the queue.
 
-    Sorted oldest-first so the owner naturally clears the queue in FIFO
-    order.
+    FIFO order because the owner should clear older requests first;
+    a customer waiting 6 hours shouldn't be behind one that came in
+    10 minutes ago.
     """
-    from sqlalchemy import func
-
     base_q = select(PendingRegistration).where(
-        PendingRegistration.status == "pending"
+        PendingRegistration.status == STATUS_AWAITING
     )
-
     rows = db.scalars(
-        base_q.order_by(PendingRegistration.created_at.asc())
-        .offset(skip)
-        .limit(limit)
+        base_q.order_by(PendingRegistration.created_at.asc()).offset(skip).limit(limit)
     ).all()
-
-    total = db.scalar(
-        select(func.count(PendingRegistration.id))
-        .where(PendingRegistration.status == "pending")
-    ) or 0
-
+    total = (
+        db.scalar(
+            select(func.count(PendingRegistration.id)).where(
+                PendingRegistration.status == STATUS_AWAITING
+            )
+        )
+        or 0
+    )
     return list(rows), total
+
+
+def count_awaiting(db: Session) -> int:
+    """Count of pending registrations — used by the sidebar badge."""
+    return (
+        db.scalar(
+            select(func.count(PendingRegistration.id)).where(
+                PendingRegistration.status == STATUS_AWAITING
+            )
+        )
+        or 0
+    )
