@@ -8,6 +8,7 @@ import { useEffect } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   Boxes,
+  ClipboardCheck,
   LayoutDashboard,
   LogOut,
   ShoppingBag,
@@ -18,14 +19,19 @@ import {
 } from 'lucide-react';
 
 import { useAuth } from '../context/AuthContext';
+import { useApprovalsCount } from '../hooks/useApprovals';
 import BrandMark from './BrandMark';
 
+// `badge: 'approvals'` marks an item as carrying a live count. The render
+// loop looks the number up rather than storing it here, so NAV_SECTIONS
+// stays a static description of the nav rather than a stateful thing.
 const NAV_SECTIONS = [
   {
     label: 'Operations',
     items: [
       { to: '/', label: 'Dashboard', icon: LayoutDashboard, exact: true },
       { to: '/orders', label: 'Orders', icon: ShoppingCart },
+      { to: '/approvals', label: 'Approvals', icon: ClipboardCheck, badge: 'approvals' },
       { to: '/customers', label: 'Customers', icon: Users },
       { to: '/products', label: 'Products', icon: ShoppingBag },
     ],
@@ -43,6 +49,12 @@ const NAV_SECTIONS = [
 export default function Sidebar({ mobileOpen, onClose }) {
   const { user, logout } = useAuth();
   const location = useLocation();
+
+  // Polls every 30s (see useApprovals). Failure is silent on purpose — a
+  // flaky count request shouldn't put an error state in the nav; the
+  // badge just doesn't render until a poll succeeds.
+  const { data: approvalsCount } = useApprovalsCount();
+  const pendingApprovals = approvalsCount?.count ?? 0;
 
   useEffect(() => {
     if (mobileOpen) onClose();
@@ -101,6 +113,7 @@ export default function Sidebar({ mobileOpen, onClose }) {
               <ul className="space-y-0.5">
                 {section.items.map((item) => {
                   const Icon = item.icon;
+                  const badgeCount = item.badge === 'approvals' ? pendingApprovals : 0;
                   return (
                     <li key={item.to}>
                       <NavLink
@@ -126,6 +139,16 @@ export default function Sidebar({ mobileOpen, onClose }) {
                               aria-hidden="true"
                             />
                             <span>{item.label}</span>
+                            {/* Count badge — hidden at zero so a cleared
+                                queue doesn't leave a "0" sitting there */}
+                            {badgeCount > 0 && (
+                              <span
+                                className="ml-auto min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-semibold rounded-full bg-amber-500 text-white"
+                                aria-label={`${badgeCount} awaiting approval`}
+                              >
+                                {badgeCount > 99 ? '99+' : badgeCount}
+                              </span>
+                            )}
                           </>
                         )}
                       </NavLink>

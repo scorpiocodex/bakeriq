@@ -67,11 +67,11 @@ class RegistrationSubmission(BaseModel):
     """POST request body — the form fields the customer filled out."""
 
     name: str = Field(..., min_length=1, max_length=100)
-    address_line_1: str | None = Field(default=None, max_length=200)
+    address_line_1: str = Field(..., min_length=1, max_length=200)
     address_line_2: str | None = Field(default=None, max_length=200)
-    city: str | None = Field(default=None, max_length=100)
-    state: str | None = Field(default=None, max_length=100)
-    pincode: str | None = Field(default=None, max_length=10)
+    city: str = Field(..., min_length=1, max_length=100)
+    state: str = Field(..., min_length=1, max_length=100)
+    pincode: str = Field(..., pattern=r"^\d{6}$")
 
 
 class RegistrationSubmissionResponse(BaseModel):

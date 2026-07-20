@@ -1,6 +1,10 @@
 import { useParams } from 'react-router-dom';
 import { useRegistration } from '../hooks/useRegistration';
 
+// Indian PIN codes are exactly 6 digits. Mirrors PINCODE_REGEX on the
+// backend so the button disables before the server has to reject it.
+const PINCODE_RE = /^\d{6}$/;
+
 export default function RegistrationPage() {
   const { token } = useParams();
   const {
@@ -143,7 +147,21 @@ export default function RegistrationPage() {
     }
   }
 
-  const canSubmit = form.name.trim().length > 0 && !isSubmitting;
+  // Every field except address line 2 is required. The address isn't
+  // optional here because approving a registration copies these straight
+  // into a Customer record, where they're mandatory — a name-only
+  // registration would create a Customer the dashboard can't display.
+  const canSubmit =
+    form.name.trim().length > 0 &&
+    form.address_line_1.trim().length > 0 &&
+    form.city.trim().length > 0 &&
+    form.state.trim().length > 0 &&
+    PINCODE_RE.test(form.pincode) &&
+    !isSubmitting;
+
+  // Only warn once they've typed something — an empty field shouldn't
+  // show an error before they've had a chance to fill it in.
+  const pincodeInvalid = form.pincode.length > 0 && !PINCODE_RE.test(form.pincode);
 
   function handleSubmit(e) {
     e.preventDefault();
@@ -198,10 +216,10 @@ export default function RegistrationPage() {
           />
         </div>
 
-        {/* Address line 1 */}
+        {/* Address line 1 — required, we deliver here */}
         <div>
           <label htmlFor="address_line_1" className="block text-sm font-medium text-gray-700 mb-1">
-            Address line 1
+            Address line 1 <span className="text-red-500">*</span>
           </label>
           <input
             id="address_line_1"
@@ -209,12 +227,13 @@ export default function RegistrationPage() {
             value={form.address_line_1}
             onChange={(e) => setField('address_line_1', e.target.value)}
             placeholder="e.g. 12 MG Road"
+            required
             maxLength={200}
             className="w-full rounded-md border border-gray-300 px-3 py-2 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
           />
         </div>
 
-        {/* Address line 2 */}
+        {/* Address line 2 — genuinely optional */}
         <div>
           <label htmlFor="address_line_2" className="block text-sm font-medium text-gray-700 mb-1">
             Address line 2 (optional)
@@ -234,7 +253,7 @@ export default function RegistrationPage() {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label htmlFor="city" className="block text-sm font-medium text-gray-700 mb-1">
-              City
+              City <span className="text-red-500">*</span>
             </label>
             <input
               id="city"
@@ -242,13 +261,14 @@ export default function RegistrationPage() {
               value={form.city}
               onChange={(e) => setField('city', e.target.value)}
               placeholder="Kochi"
+              required
               maxLength={100}
               className="w-full rounded-md border border-gray-300 px-3 py-2 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             />
           </div>
           <div>
             <label htmlFor="state" className="block text-sm font-medium text-gray-700 mb-1">
-              State
+              State <span className="text-red-500">*</span>
             </label>
             <input
               id="state"
@@ -256,31 +276,38 @@ export default function RegistrationPage() {
               value={form.state}
               onChange={(e) => setField('state', e.target.value)}
               placeholder="Kerala"
+              required
               maxLength={100}
               className="w-full rounded-md border border-gray-300 px-3 py-2 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             />
           </div>
         </div>
 
-        {/* Pincode */}
+        {/* Pincode — required, exactly 6 digits */}
         <div>
           <label htmlFor="pincode" className="block text-sm font-medium text-gray-700 mb-1">
-            Pincode
+            Pincode <span className="text-red-500">*</span>
           </label>
           <input
             id="pincode"
             type="text"
             inputMode="numeric"
-            pattern="[0-9]*"
+            pattern="[0-9]{6}"
             value={form.pincode}
             onChange={(e) => {
               const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 6);
               setField('pincode', digitsOnly);
             }}
             placeholder="682020"
+            required
             maxLength={6}
-            className="w-full rounded-md border border-gray-300 px-3 py-2 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+            className={`w-full rounded-md border px-3 py-2 focus:outline-none focus:ring-1 ${
+              pincodeInvalid
+                ? 'border-red-300 focus:border-red-500 focus:ring-red-500'
+                : 'border-gray-300 focus:border-brand-500 focus:ring-brand-500'
+            }`}
           />
+          {pincodeInvalid && <p className="text-xs text-red-600 mt-1">Pincode must be 6 digits.</p>}
         </div>
 
         {/* Submit error — inline banner above the button */}
