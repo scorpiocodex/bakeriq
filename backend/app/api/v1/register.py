@@ -32,7 +32,11 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.models.customer import Customer
-from app.services import pending_registration_service, registration_token_service
+from app.services import (
+    owner_notification_service,
+    pending_registration_service,
+    registration_token_service,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/register", tags=["register"])
@@ -220,6 +224,13 @@ def submit_registration(
 
     # Commit both operations atomically
     db.commit()
+
+    # Fire the owner notification. This is sync but wrapped defensively —
+    # any failure here does NOT fail the customer's registration, which
+    # was already committed above.
+    owner_notification_service.notify_new_registration(
+        db, name=reg.name, phone=reg.phone
+    )
 
     logger.info(
         f"submit_registration: created PendingRegistration id={reg.id} "

@@ -165,3 +165,24 @@ def registration_link_reply(token: str, link: str) -> Reply:
         variables={"1": token},
         log_body=f"Welcome to BakeriQ! Register now: {link}",
     )
+
+
+def owner_registration_notification_reply(name: str, phone: str) -> Reply:
+    """Owner-facing notification card when a new pending registration lands.
+
+    Sent to OWNER_WHATSAPP_PHONE from owner_notification_service.
+    Body: 'New registration:\\n{{1}} — {{2}}\\n\\nTap to review on the dashboard.'
+    Buttons: [Open dashboard] → dashboard URL
+    """
+    sid = settings.CONTENT_SID_OWNER_NOTIFICATION
+    dashboard_url = settings.PUBLIC_BASE_URL.rstrip("/") + "/approvals"
+    if sid is None:
+        # Text fallback if template not bootstrapped
+        return Reply.text(
+            f"New registration:\n{name} — {phone}\n\nReview at: {dashboard_url}"
+        )
+    return Reply.template(
+        sid,
+        variables={"1": name, "2": phone},
+        log_body=(f"New registration: {name} — {phone}. Review at {dashboard_url}."),
+    )

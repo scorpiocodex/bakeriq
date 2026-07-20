@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     CONTENT_SID_FALLBACK: str | None = None
     CONTENT_SID_ORDER_CONFIRMATION: str | None = None
     CONTENT_SID_REGISTRATION_LINK: str | None = None
+    CONTENT_SID_OWNER_NOTIFICATION: str | None = None
+
+    # === Owner notification ===
+    # WhatsApp address for the bakery owner. Format: 'whatsapp:+91...'
+    # If unset, owner notifications are logged-and-skipped (dev-friendly).
+    OWNER_WHATSAPP_PHONE: str | None = None
 
     # Public base URL Twilio uses
     PUBLIC_BASE_URL: str = "http://localhost:8000"

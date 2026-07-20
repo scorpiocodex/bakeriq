@@ -182,6 +182,17 @@ def _create_registration_link(client: TwilioContentClient) -> str:
     )
 
 
+def _create_owner_notification(client: TwilioContentClient) -> str:
+    """Owner notification when a new registration lands."""
+    dashboard_url = settings.PUBLIC_BASE_URL.rstrip("/") + "/approvals"
+    return client.create_call_to_action(
+        friendly_name="bakeriq_owner_notification",
+        body="New registration:\n{{1}} — {{2}}\n\nTap to review on the dashboard.",
+        actions=[UrlAction(title="Open dashboard", url=dashboard_url)],
+        variables={"1": "name", "2": "phone"},
+    )
+
+
 TEMPLATES: list[TemplateSpec] = [
     TemplateSpec(
         friendly_name="bakeriq_greeting",
@@ -212,6 +223,11 @@ TEMPLATES: list[TemplateSpec] = [
         friendly_name="bakeriq_registration_link",
         env_var="CONTENT_SID_REGISTRATION_LINK",
         creator=_create_registration_link,
+    ),
+    TemplateSpec(
+        friendly_name="bakeriq_owner_notification",
+        env_var="CONTENT_SID_OWNER_NOTIFICATION",
+        creator=_create_owner_notification,
     ),
 ]
 

@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    approvals,
     auth,
     cart,
     categories,
@@ -25,3 +26,4 @@ api_router.include_router(orders.router)
 api_router.include_router(orders.prefill_router)
 api_router.include_router(dashboard.router)
 api_router.include_router(webhooks.router)
+api_router.include_router(approvals.router)
