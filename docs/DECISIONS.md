@@ -165,6 +165,156 @@ For an internship project with 42 days remaining, the time-to-first-message diff
 
 **Historical note:** The h-screen Layout fix accidentally landed directly on `main` once. Caught, but flagged as a process slip — UI changes should always branch.
 
+## ADR-15 — Self-hosted Ollama, not a cloud LLM API
+
+**Decision:** Natural-language order parsing runs on `llama3.2:3b` via Ollama, installed natively on the host. No Claude, OpenAI, or other hosted API.
+
+**Alternatives considered:**
+
+- **Claude API** — the original plan, and better at the task. Dropped when the project's API credits ran out mid-Phase-3.
+- **A larger local model** — better accuracy, but the dev machine is an Intel Core Ultra 5 125H with 16 GB RAM and an Arc iGPU. 3B parameters at Q4 is what fits comfortably alongside Postgres, Redis, and two Vite servers.
+
+**Why local won, beyond the forcing function:** No per-message cost, so smoke-testing is free. No customer message leaves the machine, which matters for a system holding names, phones, and delivery addresses. And Ollama's `format` parameter constrains generation to a JSON schema at the sampling level, so the output is guaranteed parseable — no markdown-fence stripping or repair logic, which a plain-text cloud completion would need.
+
+**What it costs:** 3-5 seconds per inference on CPU, versus sub-second for a hosted API. That latency is why parsing runs in Celery rather than inline (ADR-16). Accuracy is also lower — the model needed explicit few-shot examples for Manglish quantity words (`oru` = 1, `randu` = 2) that a larger model would infer.
+
+**Runs on the host, not in a container:** the model is ~2 GB and would need re-pulling on every image rebuild. Containers reach it via the Docker bridge gateway, which requires `OLLAMA_HOST=0.0.0.0` and a UFW rule. See [`SETUP.md`](SETUP.md).
+
+**What could change the answer:** If parse quality becomes the limiting factor on customer experience, a hosted model is the fix — the interface is narrow enough (`llm_parser_service` in, JSON out) that swapping is a contained change.
+
+## ADR-16 — LLM parsing runs in Celery, not inline in the webhook
+
+**Decision:** When the fast-path dispatcher can't match a message, the webhook enqueues `tasks.llm.parse_and_send` and returns empty TwiML immediately. The worker sends the real reply through Twilio's REST API seconds later.
+
+**Alternatives considered:**
+
+- **Parse inline and return the reply as TwiML** — one round trip, much simpler. But Twilio's webhook timeout is ~10 seconds and local inference takes 3-5, leaving no headroom for a slow first token or a retry.
+- **Respond immediately with "one moment…" then follow up** — same async machinery, plus an extra message against the sandbox's 50/day quota.
+
+**Why Celery won:** It decouples reply latency from webhook latency entirely. It also gives retries for free, which matters because Ollama can be temporarily unreachable — the container restarts, the host service reloads, the bridge rule gets dropped.
+
+**Consequence worth knowing:** the worker runs with its own DB session (`SessionLocal`, not the request-scoped `get_db`), so the webhook has to commit the inbound message *before* enqueuing. Otherwise the worker starts, queries for a conversation that isn't visible yet, and fails.
+
+**Retry hardening:** `autoretry_for` covers Ollama SDK errors and `httpx.ConnectError` / `ConnectTimeout` / `ReadTimeout`. When retries exhaust, a `MaxRetriesExceededError` handler sends a degraded-service message rather than leaving the customer in silence.
+
+## ADR-17 — The parser extracts everything; the matcher decides availability
+
+**Decision:** `llm_parser_service` returns every food item the customer named, including ones not on today's menu. `product_matcher_service` then resolves those names against the product table and decides what's orderable.
+
+**Alternatives considered:**
+
+- **Have the LLM filter** — give it the menu and ask it to return only available items. This is what the first implementation did.
+
+**Why the split won — and the bug that proved it:** The original prompt said "if the customer asks for something NOT in the catalog, OMIT it entirely." That worked, in the sense that the model obeyed. But it destroyed the signal the rest of the system needed:
+
+- `i want 1 samosa and 1 pizza` (neither available) returned `items: []`, indistinguishable from `how are you today`. The customer got "sorry, I didn't catch that" when the bot had understood perfectly and simply couldn't serve them. The `nothing_available` branch was unreachable.
+- Worse, `i want 2 veg puff and 1 samosa` also sometimes returned `[]` — the presence of one off-menu item made the model drop the whole order.
+
+Inverting the rule fixed both. Verified against eight cases covering on-menu, off-menu, mixed, Manglish quantities, alias resolution, and non-order chitchat.
+
+**The general principle:** don't ask a stochastic component to make a decision a deterministic one can make. The LLM is good at language and bad at exactness; the matcher is the reverse. Extraction is a language problem, availability is a lookup.
+
+**Guardrail:** the prompt still says "do NOT invent items the customer didn't mention," with a `do you have brownies?` → `[]` example. Loosening the filter risked over-extraction from questions; the example holds that line.
+
+## ADR-18 — Content Templates for interactive buttons
+
+**Decision:** Bot replies that offer choices use Twilio Content Templates with quick-reply or CTA buttons, not plain text with keyword instructions.
+
+**Alternatives considered:**
+
+- **Plain text prompts** — "Reply *menu* to see today's items". No Twilio-side setup, works everywhere. This is what Phase 3 shipped with initially.
+
+**Why templates won:** Typing a keyword correctly is friction, and the failure mode is the LLM safety valve — a 3-5 second wait and a possible misparse for what should be a single tap. Buttons remove the failure mode entirely.
+
+**The two sharp edges:**
+
+1. **Button titles are load-bearing.** Twilio delivers the button's *title* as the inbound message body, and `customer_handler` matches on those strings. Renaming a button silently breaks its route with no error anywhere.
+2. **URLs are baked in at creation time.** A template carrying a link stores the URL as it was when created. When the ngrok free-tier hostname rotates, those templates point at a dead host. Editing the bootstrap script isn't enough — it skips templates that already exist, so the old one must be deleted on Twilio first. `make ngrok-check` detects the drift; `make templates-refresh` repairs it.
+
+**Also:** the Twilio Python SDK can send templates but cannot create them. `twilio_content_service` wraps the Content API with raw `httpx` calls for CRUD.
+
+## ADR-19 — Customers never log in; a path token is the credential
+
+**Decision:** The customer-facing web app has no authentication. A URL-safe random token in the path grants exactly one capability, and receiving it over WhatsApp is the proof of identity.
+
+**Alternatives considered:**
+
+- **Customer accounts with passwords** — conventional, and completely wrong for the context. A bakery customer ordering twice a week will not maintain a password, and every forgotten one becomes a support call to the owner.
+- **OTP on each visit** — no password to forget, but adds a round trip and burns Twilio quota on every order.
+- **Long-lived signed cookie after first WhatsApp verification** — better repeat-visit UX, but cookie lifetime becomes the security boundary and phone handoff gets murky.
+
+**Why the token won:** WhatsApp is already the identity layer. Delivering a token to a number proves control of that number as well as any OTP does, and it costs nothing extra because we're sending a message anyway. This is the same pattern as "click this link to confirm your email" — the inbox is the credential.
+
+**The threat model, stated plainly.** A stolen token grants one action, for one phone, once, within a short window. Registration tokens are phone-bound with the form's phone field read-only, so an attacker can't register as someone else. Cart tokens are customer-bound and consumed on order placement. Worst case is one junk row the owner rejects, or one unwanted order the owner cancels.
+
+**What we deliberately don't defend against:** someone who already controls the customer's WhatsApp account. They have larger problems than a bakery order.
+
+**What could change the answer:** payment. The moment a token can move money, this reasoning stops holding and real authentication is required.
+
+## ADR-20 — Registration by webform, not bot conversation
+
+**Decision:** An unrecognised number gets a CTA card linking to a web form. The previous multi-turn bot conversation (`collecting_name` → `collecting_area` → `awaiting_approval`) was deleted outright.
+
+**Alternatives considered:**
+
+- **Keep the conversation** — no new surface area, works without a browser.
+- **Keep both, webform preferred with conversation as fallback** — most forgiving, but doubles the code paths and the failure modes for a flow that runs once per customer.
+
+**Why the webform won:** The conversation collected a name and a free-text "area", which wasn't a real address. Approving one produced a Customer with null address fields — and since `CustomerBase` requires them, that row then broke serialization for the entire customers list. A form collects structured fields with validation in one shot, matching the Customer schema exactly so approval is a straight field copy.
+
+It also matches the cart flow the codebase already had, so there's one pattern for "bot sends a link, customer fills something in" rather than two.
+
+**What it costs:** the customer needs a browser and has to type a full postal address. For a bakery whose customers are mostly local, that's more friction than two questions. If real customers drop off at the form, the fix is a shorter form or a delivery-vs-pickup toggle — not nullable addresses, which is what caused the original bug.
+
+**Deleted rather than retired:** the state machine is gone, along with its `conversation_state` column and its tests. Half-retired code becomes a graveyard that confuses the next reader. Git history has it if anyone needs it.
+
+## ADR-21 — Separate token tables, not one polymorphic table
+
+**Decision:** `web_session_tokens` (cart) and `registration_tokens` (webform) are distinct tables with distinct services, despite near-identical shapes.
+
+**Alternatives considered:**
+
+- **One table with a nullable `customer_id` and a `kind` discriminator** — less duplication, one service.
+
+**Why separate won:** `web_session_tokens.customer_id` is non-null and load-bearing for the cart flow, which is well-tested and working. Registration happens *before* a Customer exists, so unifying them means making that column nullable — and every cart code path that currently trusts it would need re-auditing for a null case that can't actually occur there.
+
+The semantics differ too: cart tokens are customer-bound with a 30-minute expiry; registration tokens are phone-bound with 12 hours and one-shot consumption. Roughly 60 lines of mirrored service code is cheaper than the risk of introducing a null into a working flow.
+
+**What could change the answer:** a third token type. Two mirrored tables is fine; four would be a smell worth refactoring.
+
+## ADR-22 — Owner notification is synchronous and best-effort
+
+**Decision:** Submitting the registration form sends the owner's WhatsApp card inline in the request, wrapped in a broad `try/except` that logs and swallows every failure.
+
+**Alternatives considered:**
+
+- **Celery task** — consistent with the LLM path, retries for free. But it adds a moving part for a single ~500 ms Twilio call.
+- **Let failures propagate** — the customer would see an error for something that isn't their problem, after their registration had already been committed.
+
+**Why sync-and-swallow won:** The customer is looking at a success page; 500 ms is invisible. And the notification is genuinely optional — if Twilio is down, the owner still sees the request via the approvals badge, which polls independently. Failing the customer's registration because a *notification* failed would be strictly worse.
+
+**Ordering matters:** the notification fires *after* the registration commits. A Twilio exception can't roll back the customer's data.
+
+**If `OWNER_WHATSAPP_PHONE` is unset**, the whole thing is a logged no-op — which keeps local dev quiet without needing a real phone.
+
+## ADR-23 — Both front ends proxied through the API
+
+**Decision:** FastAPI reverse-proxies `/web/*` to the customer app and `/app/*` to the dashboard. Each Vite config declares a matching `base` so paths forward verbatim.
+
+**Alternatives considered:**
+
+- **A second ngrok tunnel** — free tier allows it, but it's another process to babysit and another URL to keep in sync with the templates.
+- **Serve built bundles from FastAPI's StaticFiles** — production-shaped, but gives up hot reload in dev.
+
+**Why the proxy won:** Twilio needs one public URL and ngrok's free tier gives one tunnel. Everything a phone reaches — the API, the cart, the registration form, the approvals page — has to sit behind one hostname. This mirrors what nginx will do in production, so the topology is the same shape in both.
+
+**What it costs:**
+
+- The dashboard's dev URL becomes `localhost:5173/app/`; bare `localhost:5173` no longer serves it.
+- `BrowserRouter` needs a matching `basename`. React Router respects it; raw `window.location` assignments don't, so three files hardcode `/app/login`.
+- Vite dev mode serves every import as a separate request. Through a tunnel with ~250 ms latency, a cold dashboard load is slow. Serving a built bundle would fix it if this becomes painful.
+- Each Vite server needs its docker service name in `allowedHosts`, because the proxy strips the original `Host` header.
+
 ---
 
 ## Adding new decisions
