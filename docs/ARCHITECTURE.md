@@ -2,38 +2,53 @@
 
 This document explains how the BakeriQ codebase is structured and the rules it follows. Intended for anyone reading or modifying the code.
 
-For *day-to-day workflow* (running tests, creating migrations, etc.) see [`DEVELOPMENT.md`](DEVELOPMENT.md). For *why* specific choices were made, see [`DECISIONS.md`](DECISIONS.md).
+For *day-to-day workflow* (running tests, creating migrations, etc.) see [`DEVELOPMENT.md`](DEVELOPMENT.md). For *why* specific choices were made, see [`DECISIONS.md`](DECISIONS.md). For *getting it running from a clean clone*, see [`SETUP.md`](SETUP.md).
 
 ## High-level shape
 
-BakeriQ is a conventional two-tier web application:
+BakeriQ has two front ends, one API, and an async worker:
 
 ```
-┌──────────────────────────────┐
-│  React frontend (Vite)       │
-│  Port 5173                   │
-└──────────────┬───────────────┘
-               │  HTTP / JSON (axios)
-               │  JWT Bearer auth
-               ▼
-┌──────────────────────────────┐
-│  FastAPI backend (uvicorn)   │
-│  Port 8000                   │
-│                              │
-│   api → service → model      │
-└──────────────┬───────────────┘
-               │
-       ┌───────┴────────┐
-       ▼                ▼
-┌─────────────┐  ┌─────────────┐
-│ PostgreSQL  │  │   Redis 7   │
-│  Port 5432  │  │  Port 6379  │
-└─────────────┘  └─────────────┘
+   WhatsApp (Twilio)                    Owner's browser
+         |                                     |
+         | webhook (HMAC-verified)             |
+         v                                     v
++----------------------------------------------------------+
+|  FastAPI (uvicorn) - port 8000                           |
+|                                                          |
+|   /api/v1/*   api -> service -> model                    |
+|   /web/*      reverse proxy ------+                      |
+|   /app/*      reverse proxy ------|--+                   |
++-------+----------------------+----|--|-------------------+
+        |                      |    |  |
+        |              enqueue |    |  |
+        v                      v    |  |
++-------------+  +-------------+    |  |
+| PostgreSQL  |  |   Redis 7   |    |  |
+|  port 5432  |  |  port 6379  |    |  |
++-------------+  +------+------+    |  |
+                        |           |  |
+                 +------v------+    |  |
+                 |   Celery    |    |  |
+                 |   worker    +----|--|--> Ollama (host, :11434)
+                 +-------------+    |  |
+                                    |  |
+        +---------------------------+  +--------------+
+        v                                             v
++----------------------+                  +----------------------+
+| frontend-customer    |                  | frontend (dashboard) |
+| Vite, base=/web/     |                  | Vite, base=/app/     |
+| port 5174            |                  | port 5173            |
++----------------------+                  +----------------------+
 ```
 
-Postgres holds all persistent state. Redis is currently unused but will become the conversation-state store in Phase 3 (WhatsApp bot).
+**Why the API proxies both front ends.** Twilio needs one public URL, and ngrok's free tier gives one tunnel. Routing `/web` and `/app` through FastAPI means a single hostname reaches the API, the customer app, and the dashboard. Each Vite config declares a matching `base` so paths forward verbatim — stripping the prefix instead would break asset URLs. In production nginx does the same routing in front of the built bundles, giving three prefixes: `/api`, `/web`, `/app`.
 
-Authentication is JWT — the frontend logs in once, gets a token, and includes it as `Authorization: Bearer <token>` on every subsequent request. There are no sessions, no cookies, no CSRF concerns.
+**Redis** carries three things on separate databases: Celery's broker (DB 1), Celery's result backend (DB 2), and the in-progress cart cache (DB 0). Separate DBs so flushing the queue can't wipe cart state.
+
+**Ollama** runs natively on the host rather than in a container — the model is ~2 GB and would need re-pulling on every rebuild. Containers reach it via the Docker bridge gateway (`172.17.0.1:11434`), which requires `OLLAMA_HOST=0.0.0.0` on the host and a UFW rule if the firewall is up. See [`SETUP.md`](SETUP.md).
+
+Authentication is JWT, but only for the dashboard. Customer-facing flows have no login — a URL-safe token in the path *is* the credential, scoped to one action. See [The WhatsApp channel](#the-whatsapp-channel).
 
 The system is single-tenant by design: one bakery, one owner, one chef. There is no organisation or tenant concept — all data is global within a single deployment.
 
@@ -44,13 +59,13 @@ The system is single-tenant by design: one bakery, one owner, one chef. There is
 The backend follows a strict three-layer pattern:
 
 ```
-api/v1/<resource>.py    ← Pydantic in/out, HTTP concerns, calls service
-       │
-       ▼
-services/<resource>_service.py  ← Business logic, queries, validation
-       │
-       ▼
-models/<resource>.py    ← SQLAlchemy ORM models
+api/v1/<resource>.py    <- Pydantic in/out, HTTP concerns, calls service
+       |
+       v
+services/<resource>_service.py  <- Business logic, queries, validation
+       |
+       v
+models/<resource>.py    <- SQLAlchemy ORM models
 ```
 
 **API layer** (`backend/app/api/v1/`) — One file per resource: `customers.py`, `products.py`, `orders.py`, etc. These handle:
@@ -63,20 +78,37 @@ models/<resource>.py    ← SQLAlchemy ORM models
 
 API layer files contain **no business logic**. If a function has more than a few lines of work between getting a request and returning a response, that work belongs in the service layer.
 
-**Service layer** (`backend/app/services/`) — One file per resource: `customer_service.py`, `product_service.py`, `order_service.py`, etc. These contain:
+**Service layer** (`backend/app/services/`) — Business logic, queries, cross-table validation, transactions. Services take a `db: Session` as their first parameter and return ORM model instances (or `None`). They don't touch HTTP concerns — they don't raise `HTTPException`, they raise domain exceptions or return sentinel values that the API layer translates.
 
-- Database queries and joins
-- Cross-table validation
-- Business rules (e.g., "can't reactivate a cancelled order")
-- Transactions
+The service layer is no longer one-file-per-resource. Phase 3 added a cluster of services with no corresponding REST resource:
 
-Services take a `db: Session` as their first parameter and return ORM model instances (or `None`). They don't touch HTTP concerns — they don't raise `HTTPException`, they raise domain exceptions or return sentinel values that the API layer translates.
+| Service | Role |
+|---|---|
+| `customer_service`, `product_service`, `order_service`, `category_service`, `default_order_service` | CRUD + business rules for the dashboard resources |
+| `customer_handler` | Fast-path dispatcher for inbound WhatsApp — keywords and button taps |
+| `registration_handler` | Issues a webform token for unrecognised numbers |
+| `llm_parser_service` | Ollama call, structured-JSON extraction of items + quantities |
+| `product_matcher_service` | Deterministic resolution of parsed names against the product table |
+| `llm_cart_handoff_service` | Turns matched items into a cart + web link |
+| `reply` | The `Reply` primitive (text XOR template) |
+| `template_replies` | Factories building `Reply` objects for each Content Template |
+| `whatsapp_sender` | Twilio REST sends + audit logging of every attempt |
+| `twilio_content_service` | Content Template CRUD (the SDK can't create templates) |
+| `conversation_log` | Conversation + message persistence, customer lookup by phone |
+| `conversation_state` | Redis-backed short-lived conversation state |
+| `cart_cache` | Redis-backed in-progress cart contents |
+| `token_service`, `web_link_service` | Cart-link tokens and their URLs |
+| `registration_token_service` | Registration webform tokens |
+| `pending_registration_service` | The approval queue; approve/reject transitions |
+| `owner_notification_service` | Outbound alerts to the owner's phone |
 
 **Model layer** (`backend/app/models/`) — SQLAlchemy declarative models. One file per table. Models can have computed properties and simple helper methods but **no querying** — that belongs in services.
 
 ### Why this layering matters
 
-The reason for the strict separation is that it makes the codebase testable and survivable when requirements change. The service layer can be unit-tested without spinning up FastAPI. The API layer becomes thin enough that changes are mechanical. When the WhatsApp bot lands in Phase 3, the bot's message handler will call the same service functions the API uses — no business logic gets duplicated.
+The strict separation makes the codebase testable and survivable when requirements change. The service layer can be unit-tested without spinning up FastAPI. The API layer stays thin enough that changes are mechanical.
+
+Phase 3 is the payoff: the WhatsApp bot creates orders through `order_service`, exactly as the dashboard API does. No business logic is duplicated across the two channels.
 
 ### Pydantic schemas
 
@@ -84,10 +116,12 @@ The reason for the strict separation is that it makes the codebase testable and 
 
 - `*Create` schema (for POST request bodies)
 - `*Update` schema (for PATCH bodies — all fields optional)
-- `*Read` schema (for response bodies — includes IDs and timestamps)
+- `*Read` / `*Out` schema (for response bodies — includes IDs and timestamps)
 - `*ListResponse` schema (paginated list wrapper with `items`, `total`)
 
-Schemas are the contract with the frontend. The frontend types in `frontend/src/api/*.js` mirror these.
+Schemas are the contract with the frontend. The frontend's `frontend/src/api/*.js` functions mirror them.
+
+One trap worth knowing: `CustomerBase` requires `address_line_1`, `city`, `state`, and `pincode`. Anything that creates a Customer has to supply all four, or the row inserts fine and then breaks `CustomerOut` serialization — which 500s the entire customers list, not just the offending row. This is why the registration webform requires a full address.
 
 ### Core
 
@@ -97,6 +131,10 @@ Schemas are the contract with the frontend. The frontend types in `frontend/src/
 - `database.py` — SQLAlchemy engine, session factory, `get_db` dependency
 - `deps.py` — FastAPI dependencies including `get_current_user`
 - `security.py` — password hashing (bcrypt), JWT encoding/decoding
+- `twilio_client.py` — Twilio SDK client + webhook signature verification
+- `ollama_client.py` — Ollama client
+- `redis_client.py` — Redis connection
+- `celery_app.py` — Celery application and task discovery
 
 Imports are locked:
 
@@ -107,73 +145,169 @@ from app.core.deps import get_current_user
 
 Don't shorten these or move `get_db` somewhere else.
 
+Note that `.env` changes need `docker compose up -d --force-recreate`, not `restart` — a restarted container keeps the environment it was created with.
+
 ### Migrations
 
 `backend/alembic/versions/` — Alembic migrations, one per schema change. Generated via `make migration` (which runs `alembic revision --autogenerate`).
 
-**Read [`DEVELOPMENT.md`](DEVELOPMENT.md) before creating a migration** — there's a recurring Alembic quirk with the `customers.secondary_phone` unique index that has to be cleaned up by hand on every migration.
+**Read [`DEVELOPMENT.md`](DEVELOPMENT.md) before creating a migration.** Autogenerate is noisy on this schema: it reliably re-detects the `customers.secondary_phone` unique index, and it emits cosmetic `VARCHAR(n)` length changes for columns that haven't actually changed. It has also produced `op.drop_constraint(None, ...)`, which crashes at migration time. Read every generated migration before applying it; hand-writing is often faster than cleaning up.
 
 ### Tests
 
-`backend/tests/` — pytest. One test module per service. Tests use a separate `db_test` database container (port 5433) so they never touch dev data. 96 tests pass as of Phase 2 close.
+`backend/tests/` — pytest. Tests use a separate `db_test` database container (port 5433) so they never touch dev data. **276 tests pass as of Phase 3.5 close.**
 
 Test conventions:
 
 - Fixtures live in `tests/conftest.py`
-- Each test gets a fresh database state (transaction rollback after each test)
+- Each test starts from truncated tables (faster than drop/create, same isolation)
 - Tests are organised by behaviour, not by endpoint shape — `test_snapshot_survives_price_change` rather than `test_get_order_returns_200`
+
+`conftest.py` carries an autouse fixture that stubs out `owner_notification_service.notify_new_registration`. Without it, every suite run fires real WhatsApp messages at the owner's phone and burns roughly five messages of the Twilio sandbox's 50/day quota.
+
+## The WhatsApp channel
+
+Phase 3 added an inbound channel that reuses the same service layer the dashboard API calls.
+
+### Inbound path
+
+```
+Twilio POST /api/v1/webhooks/twilio
+    |  HMAC signature verified as a FastAPI dependency
+    |  MessageSid checked for replay (Twilio retries on failure)
+    v
+_dispatch() - decides which handler runs
+    |
+    +- known active Customer --> customer_handler
+    |                              |
+    |                              +- keyword or button match --> list[Reply]
+    |                              +- no match --> None --> Celery
+    |
+    +- awaiting_approval --> "still under review"
+    +- rejected          --> polite decline
+    +- unknown phone     --> registration_handler (issues a webform token)
+```
+
+Every handler returns `list[Reply] | None`. `None` means exactly one thing: the fast-path dispatcher found no match, so the message goes to the LLM.
+
+Replies go back by one of two paths. A single plain-text reply is returned inline as TwiML, saving a round-trip. Anything else — multiple messages, or any Content Template — goes out through Twilio's REST API, because TwiML can't carry a template.
+
+### The LLM safety valve
+
+Unmatched messages are handed to a Celery task (`tasks.llm.parse_and_send`) rather than parsed inline — inference takes seconds and would hold the webhook past Twilio's timeout.
+
+The task runs a two-stage parse:
+
+1. **`llm_parser_service`** asks Ollama for structured JSON — item names and quantities. Ollama's `format` parameter constrains output at the sampling level, so the response is guaranteed-parseable without stripping markdown fences. Handles English, Malayalam, and Manglish (Malayalam written in Latin script).
+2. **`product_matcher_service`** resolves those names against the real product table using exact matches and aliases. Deterministic; the LLM never decides what's orderable.
+
+The split matters. The parser extracts *everything the customer named*, including off-menu items, and the matcher decides what's available. An earlier version had the LLM filter off-menu items itself, which erased the signal needed to tell a customer "we don't have that today" — the `nothing_available` branch became unreachable, and a message mixing on- and off-menu items sometimes returned nothing at all.
+
+Retries cover both Ollama SDK errors and `httpx` connection failures. When they exhaust, a `MaxRetriesExceededError` handler sends a degraded-service message, so the customer is never left in silence.
+
+### Outbound: Reply and Content Templates
+
+`Reply` is a frozen dataclass with a body-XOR-content_sid invariant — an outbound message is unambiguously either plain text or a Content Template, never both. `Reply.text()` and `Reply.template()` are the factories.
+
+Content Templates are how the bot renders tappable buttons instead of "reply MENU to see today's items". Seven live on Twilio, created idempotently by `scripts/bootstrap_content_templates.py`, with their SIDs written into `.env`:
+
+| Template | Purpose |
+|---|---|
+| `bakeriq_greeting` | Personalised hello + Reorder / New / Status |
+| `bakeriq_nav` | Mid-conversation prompt, same three buttons |
+| `bakeriq_cart_link` | CTA opening the cart web app |
+| `bakeriq_fallback` | Nothing matched — Menu / New / Status |
+| `bakeriq_order_confirmation` | Itemised total + Status / Menu / New |
+| `bakeriq_registration_link` | CTA opening the registration webform |
+| `bakeriq_owner_notification` | New-registration alert + CTA to the approvals page |
+
+Two constraints worth knowing before touching them:
+
+- **Button titles are load-bearing.** Twilio delivers the button's *title* as the inbound message body, and `customer_handler` matches on those strings. Renaming a button silently breaks its route.
+- **URLs are baked in at creation time.** Changing `PUBLIC_BASE_URL` — which happens whenever an ngrok free-tier hostname rotates — leaves the cart-link and owner-notification templates pointing at a dead host. `make ngrok-check` detects the drift and `make templates-refresh` fixes it. Editing the URL in the bootstrap script is not enough on its own: the script skips templates that already exist, so the old one has to be deleted on Twilio first.
+
+`whatsapp_sender` sends each `Reply` and logs every attempt to `conversation_messages`, including failures (with a null `twilio_sid`), so the audit trail records intent as well as delivery. `send_replies` returns `list[str | None]`, letting callers report honestly whether a message actually reached the customer.
+
+### Token-based customer auth
+
+Customers never log in. Two token types, both URL-safe random strings that appear in a URL path:
+
+- **`web_session_tokens`** — cart sessions. Bound to a Customer, 30-minute expiry, consumed when the order is placed. A `kind` column (`new` / `reorder` / `edit`) tells the customer app which flow to render. The token string is the primary key.
+- **`registration_tokens`** — the registration webform. Bound to a *phone* rather than a Customer, since registration happens before a Customer exists. 12-hour expiry, one-shot. Has a separate UUID `id` alongside the token.
+
+They're separate tables rather than one polymorphic one: `web_session_tokens.customer_id` is non-null and load-bearing for the well-tested cart flow, and making it nullable to accommodate registration would risk silent bugs there.
+
+The threat model is deliberately modest. WhatsApp is the identity layer — receiving the token on that number is the proof of ownership. A stolen token grants one action for one phone, and the registration form's phone field is read-only from the token, so an attacker can't register as someone else. Worst case is one junk row the owner rejects. This is the same pattern as a "click this link to confirm" email.
+
+### Registration and approval
+
+An unrecognised number gets a CTA card, taps through to `/web/register/{token}`, and fills a form (name plus a full delivery address — see the `CustomerBase` note above). Submitting creates a `pending_registrations` row in `awaiting_approval` and fires a WhatsApp card to the owner.
+
+The owner taps that card's button, lands on `/app/approvals` on their phone, and approves or rejects. Approving copies the address field-for-field into a Customer — the two models share the same shape deliberately, so no re-parsing is needed. If a deactivated Customer already exists on that phone, approval reactivates it in place rather than inserting a second row, since `primary_phone` is unique.
+
+Both transitions return 409 if the row is already terminal, so a double-tap on a phone can't create duplicates.
 
 ## Frontend
 
+There are two React apps.
+
+**`frontend/`** — the owner dashboard. JWT-authed, served under `/app`, the larger of the two.
+
+**`frontend-customer/`** — the customer-facing app. No auth beyond the path token, served under `/web`, three routes: cart (`/new`, `/reorder`, `/edit`) and registration (`/register`).
+
+Both are Vite + React 18 + TanStack Query + Tailwind, and follow the same layering.
+
 ### Layering
 
-The frontend follows a four-layer pattern that mirrors the backend's three-layer one:
-
 ```
-pages/<Page>.jsx          ← Page composition, UI state
-   │
-   ▼
-hooks/use<Resource>.js    ← TanStack Query hooks, cache management
-   │
-   ▼
-api/<resource>.js         ← Axios calls, request/response shaping
-   │
-   ▼
-api/client.js             ← Shared axios instance with auth interceptor
+pages/<Page>.jsx          <- Page composition, UI state
+   |
+   v
+hooks/use<Resource>.js    <- TanStack Query hooks, cache management
+   |
+   v
+api/<resource>.js         <- Axios calls, request/response shaping
+   |
+   v
+api/client.js             <- Shared axios instance with auth interceptor
 ```
 
-**Page layer** (`frontend/src/pages/`) — Top-level components rendered by react-router. One file per route: `Dashboard.jsx`, `Customers.jsx`, `Orders.jsx`, etc. Pages own UI state (which filter chip is active, which modal is open) and compose hooks + components. Pages contain no `axios` calls and no business logic — they read data from hooks and call mutation functions.
+**Page layer** (`src/pages/`) — Top-level components rendered by react-router. Pages own UI state (which filter chip is active, which modal is open) and compose hooks + components. Pages contain no `axios` calls and no business logic.
 
-**Hook layer** (`frontend/src/hooks/`) — TanStack Query hooks. One file per resource: `useCustomers.js`, `useProducts.js`, etc. Each file typically exports:
+**Hook layer** (`src/hooks/`) — TanStack Query hooks. One file per resource. Each exports a list hook, sometimes a detail hook, and mutation hooks. Query keys are defined once per resource as a `*Keys` object — mistyped keys are the most common cause of "why didn't my list refresh?" bugs.
 
-- A list-fetching hook (`useCustomersList(filters)`)
-- A detail-fetching hook (`useCustomer(id)`)
-- Mutation hooks (`useCreateCustomer()`, `useUpdateCustomer()`, `useDeactivateCustomer()`)
+**API layer** (`src/api/`) — Plain axios functions returning raw response data. They don't know about React Query, components, or state.
 
-Hooks own caching, refetching, and invalidation. Pages just call them.
+**Client layer** (`src/api/client.js`) — A single configured axios instance. The dashboard's version attaches the JWT and redirects to login on 401.
 
-**API layer** (`frontend/src/api/`) — Plain axios functions. One file per resource. These return raw response data (or throw on error). They don't know about React Query, components, or state.
+### The /app basename
 
-**Client layer** (`frontend/src/api/client.js`) — A single configured axios instance. This is where the JWT auth interceptor lives — every request automatically gets `Authorization: Bearer <token>` attached if a token is present.
+The dashboard's Vite `base` is `/app/`, and `BrowserRouter` takes a matching `basename`. Route paths stay unprefixed (`/orders`, not `/app/orders`) — React Router handles the prefix.
+
+React Router respects the basename automatically; **raw `window.location` assignments do not**. Three places manipulate location directly (the 401 interceptor in `client.js`, `AuthContext`, and `api/auth.js`) and each hardcodes `/app/login`. Adding a fourth means remembering the prefix.
+
+In dev the dashboard is at `localhost:5173/app/` — bare `localhost:5173` will not serve it.
 
 ### State management
 
-There are two kinds of state in the frontend:
+Two kinds of state:
 
-- **Server state** — anything that comes from the API (customer list, products, orders). Lives in TanStack Query cache.
-- **UI state** — anything purely visual (which modal is open, what's in the search box, which chip is active). Lives in `useState` inside the relevant page or component.
+- **Server state** — anything from the API. Lives in TanStack Query cache.
+- **UI state** — anything purely visual. Lives in `useState` inside the relevant page or component.
 
-There is **no Redux, Zustand, Context API for data, or any other global store**. Server state is in TanStack Query; UI state is local. The only React context used is `AuthContext` (for the logged-in user and token).
+There is **no Redux, Zustand, Context API for data, or any other global store**. The only React context is `AuthContext`, for the logged-in user and token.
 
 ### Components
 
-`frontend/src/components/` — shared components used across multiple pages:
+`frontend/src/components/` — shared components:
 
-- **Layout components**: `Layout.jsx` (root grid), `Sidebar.jsx`, `TopBar.jsx`, `BrandMark.jsx`
-- **Reusable UI**: `StatusBadge.jsx` (status pills with icons), `RowActionsMenu.jsx` (⋯ popover), `ConfirmDialog.jsx`
+- **Layout**: `Layout.jsx` (root grid), `Sidebar.jsx`, `TopBar.jsx`, `BrandMark.jsx`
+- **Reusable UI**: `StatusBadge.jsx`, `RowActionsMenu.jsx` (⋯ popover), `ConfirmDialog.jsx`
 - **Form modals**: `CustomerFormModal.jsx`, `ProductFormModal.jsx`, `OrderFormModal.jsx`, `DefaultOrderModal.jsx`
-- **Order detail**: `OrderDetailPanel.jsx` (the slide-in panel on Orders page)
-- **Routing**: `ProtectedRoute.jsx` (gates routes behind auth)
+- **Order detail**: `OrderDetailPanel.jsx`
+- **Routing**: `ProtectedRoute.jsx`
+
+`ConfirmDialog` has no text input. The approvals page needs a reason field on reject, so it carries a small local modal instead of extending the shared one.
 
 ### Utilities
 
@@ -183,56 +317,81 @@ There is **no Redux, Zustand, Context API for data, or any other global store**.
 - `formatUnitLabel(raw)` — `half_kg` → `Half Kg`
 - `formatINR(amount)` — `742.5` → `₹742.50`
 
-These exist so we never have one component formatting prices one way and another formatting them differently. If a display convention changes, edit `format.js`.
+These exist so we never have one component formatting prices one way and another differently. If a display convention changes, edit `format.js`.
 
 ### Styling
 
 Tailwind v3 with a small custom theme in `tailwind.config.js`:
 
-- Brand colour ramp (`brand-50` through `brand-800`) — variants of the primary blue
+- Brand colour ramp (`brand-50` through `brand-800`)
 - Inter font family
 - `maxWidth.app: '1400px'` — the application content cap
 
-No component library — components are built directly with Tailwind classes. Lucide-react for icons. Status colours use Tailwind's semantic palette (green for active/success, amber for in-progress, red for cancelled, etc.).
+No component library — components are built directly with Tailwind classes. Lucide-react for icons. Status colours use Tailwind's semantic palette (green for active/success, amber for in-progress, red for cancelled).
 
 ## Data model
 
-The current schema (as of Phase 2 close):
-
 ```
 users
-  └─ id, email (unique), full_name, hashed_password, is_active, timestamps
+  +- id, email (unique), full_name, password_hash, is_active,
+     is_superuser, timestamps
 
 customers
-  └─ id, name, primary_phone (unique), secondary_phone, whatsapp_enabled,
+  +- id, name, primary_phone (unique), secondary_phone,
+     preferred_channel_phone, whatsapp_enabled,
+     address_line_1, address_line_2, city, state, pincode,
      notes, is_active, timestamps
 
 categories
-  └─ id, name (unique), display_order, is_active, timestamps
+  +- id, name (unique), display_order, is_active, timestamps
 
 products
-  └─ id, name, description, category_id (FK → categories),
-     unit_price, unit_label, is_available_today, is_active, timestamps
+  +- id, name, description, category_id (FK -> categories),
+     unit_price, unit_label, aliases, is_available_today,
+     is_active, timestamps
 
 default_orders
-  └─ id, customer_id (FK → customers), name, notes, timestamps
-  └─ items: default_order_items[]
-     └─ id, default_order_id (FK), product_id (FK), quantity
+  +- id, customer_id (FK -> customers), notes, is_active, timestamps
+  +- items: default_order_items[]
+     +- id, default_order_id (FK), product_id (FK), quantity, timestamps
 
 orders
-  └─ id, customer_id (FK), order_date, status (enum), notes,
-     total_amount, created_at, updated_at
-  └─ items: order_items[]
-     └─ id, order_id (FK), product_id (FK, nullable),
-        product_name (snapshot), unit_price (snapshot), unit_label (snapshot),
-        quantity, subtotal (snapshot)
+  +- id, customer_id (FK), status (enum), is_draft, order_date, notes,
+     total_amount, timestamps
+  +- items: order_items[]
+     +- id, order_id (FK), product_id (FK, nullable),
+        product_name (snapshot), unit_price (snapshot),
+        unit_label (snapshot), quantity, subtotal (snapshot), timestamps
+
+-- Phase 3: the WhatsApp channel --
+
+conversations
+  +- id, phone, customer_id (FK, nullable), current_order_id (FK, nullable),
+     created_at, last_message_at
+  +- messages: conversation_messages[]
+     +- id, conversation_id (FK), direction, body,
+        twilio_sid (nullable), intent (nullable), created_at
+
+web_session_tokens
+  +- token (PK), customer_id (FK), kind, consumed_at,
+     expires_at, created_at
+
+-- Phase 3.5: registration + approval --
+
+pending_registrations
+  +- id, phone, name, address_line_1, address_line_2, city, state,
+     pincode, status, customer_id (FK, nullable, set on approval),
+     created_at, approved_at, updated_at
+
+registration_tokens
+  +- id, phone, token (unique), consumed_at, expires_at, created_at
 ```
 
 ### The snapshot pattern
 
-The most important non-obvious design choice: **`order_items` snapshot product name, price, and unit at creation time**. The `product_id` is preserved as a soft reference, but the displayed values are always read from the snapshot columns.
+The most important non-obvious design choice: **`order_items` snapshot product name, price, and unit at creation time**. The `product_id` is preserved as a soft reference, but displayed values always come from the snapshot columns.
 
-Why: if a product's price changes from ₹84 to ₹90 next week, today's orders should still show ₹84 — that's what the customer was charged. Without snapshots, every historical order would silently update whenever a product changes, which is wrong both legally (receipts must match what was actually paid) and operationally (the chef would see different numbers from what the customer was quoted).
+Why: if a product's price changes from ₹84 to ₹90 next week, today's orders should still show ₹84 — that's what the customer was charged. Without snapshots, every historical order would silently update whenever a product changes, which is wrong both legally (receipts must match what was paid) and operationally (the chef would see different numbers from what the customer was quoted).
 
 The test `test_snapshot_survives_price_change` is the guardrail. **Do not remove or alter it without a deliberate decision** that this invariant should change.
 
@@ -241,9 +400,9 @@ The test `test_snapshot_survives_price_change` is the guardrail. **Do not remove
 Orders move through a five-state enum stored natively in Postgres as `order_status`:
 
 ```
-received → preparing → ready → delivering   (forward chain)
-              ↓           ↓         ↓
-                    cancelled  (terminal — no reactivation)
+received -> preparing -> ready -> delivering   (forward chain)
+    |           |          |          |
+    +-----------+----------+----------+---> cancelled (terminal)
 ```
 
 The status-transition logic in `order_service.transition_status()`:
@@ -253,23 +412,34 @@ The status-transition logic in `order_service.transition_status()`:
 - `cancelled` is reachable from any state
 - `cancelled` is terminal — you can't reactivate a cancelled order; you create a new one
 
-This is event-driven, not clock-driven — orders don't auto-advance based on time. A future automation could advance them when, say, the WhatsApp bot confirms delivery, but the clock alone is not enough signal.
+This is event-driven, not clock-driven — orders don't auto-advance based on time. A clock has no idea whether the bread is actually ready.
+
+### Registration status
+
+`pending_registrations.status` is a plain string column with three values:
+
+```
+awaiting_approval -> approved   (Customer created or reactivated)
+                  -> rejected   (no Customer; row kept for audit)
+```
+
+Both terminal states are kept on record. A rejected row lets the bot decline politely if that number messages again, rather than restarting registration in a loop.
 
 ### Active / inactive convention
 
-Customers, products, and categories all have an `is_active` boolean. Filter parameters use a `status` enum with three values: `'active'`, `'inactive'`, `'all'`. Default is `'active'`. Regex-validated at the endpoint to prevent typos slipping through.
+Customers, products, and categories all have an `is_active` boolean. Filter parameters use a `status` enum with three values: `'active'`, `'inactive'`, `'all'`. Default is `'active'`, regex-validated at the endpoint to prevent typos slipping through.
 
-This is preferred to a deleted_at timestamp because operationally the bakery owner thinks in "active vs deactivated" not "soft-deleted vs visible." Reactivation is a normal operation, not an exception.
+Preferred to a `deleted_at` timestamp because operationally the owner thinks in "active vs deactivated", not "soft-deleted vs visible". Reactivation is a normal operation, not an exception — which is why approving a registration for a previously-deactivated phone reactivates that Customer rather than creating a new one.
 
 ## Frontend ↔ backend protocol
 
-The frontend and backend communicate over plain HTTP/JSON. There is no GraphQL, no tRPC, no WebSockets (yet — Phase 4 may add them for live notifications).
+Plain HTTP/JSON. No GraphQL, no tRPC, no WebSockets.
 
 Response shapes are stable Pydantic schemas. List endpoints return a wrapper:
 
 ```json
 {
-  "items": [...],
+  "items": [],
   "total": 47
 }
 ```
@@ -284,22 +454,21 @@ Or for validation failures:
 
 ```json
 { "detail": [
-    { "loc": ["body", "primary_phone"], "msg": "field required", ... }
+    { "loc": ["body", "primary_phone"], "msg": "field required" }
 ] }
 ```
 
-The frontend's axios interceptor surfaces the `detail` string into UI toasts / form errors.
+Status codes carry meaning in the token-based flows, and the customer app renders different UI for each: `404` (no such token), `410` (consumed or expired), `409` (already registered), `422` (validation).
 
 ## What's *not* in the architecture yet
 
-These will land in later phases — flagged here so you know they're missing by design, not by accident:
+Flagged here so you know they're missing by design, not by accident:
 
-- **Celery / async task queue** — Phase 3. Will be needed for LLM order parsing latency and for scheduled jobs (Phase 4).
-- **WebSockets** — Phase 4. For pushing new orders to the dashboard in real time.
-- **Background scheduler** — Phase 4. For the 4 AM chef brief, 6 AM voice dialler, etc.
-- **Twilio webhook handler** — Phase 3. Inbound message endpoint with signature verification.
-- **Claude API client** — Phase 3. For parsing natural-language WhatsApp messages into structured orders.
+- **WebSockets** — the approvals badge polls every 30 seconds instead. Fine for a signal that arrives a few times a day; revisit if live order push lands.
+- **Background scheduler** — Phase 4. For scheduled notifications (chef brief, daily summaries).
+- **Order status notifications** — Phase 4. Outbound WhatsApp when an order moves preparing → ready → delivered. The Content Template infrastructure is already in place.
 - **Inventory module** — Phase 5. Adds `raw_materials`, `recipes`, `stock_movements` tables.
-- **Billing** — Phase 6. Adds invoice generation and export adapters.
+- **Billing** — Phase 6. Adds receipts, invoices, and export adapters.
+- **Voice ordering** — dropped. WhatsApp is the only ordering channel.
 
 See [`ROADMAP.md`](ROADMAP.md) for the full plan and rationale.
