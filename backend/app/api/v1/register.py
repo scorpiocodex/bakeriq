@@ -87,9 +87,23 @@ class RegistrationSubmissionResponse(BaseModel):
 
 
 def _check_already_registered(db: Session, phone: str) -> bool:
-    """True if a Customer already exists for this phone (any status)."""
+    """True if an ACTIVE Customer already exists for this phone.
+
+    Deliberately mirrors conversation_log.find_customer_by_phone, which
+    also filters on is_active. If the two disagree, a deactivated
+    customer gets routed to registration by the bot and then blocked
+    here — a dead end with no way forward.
+
+    A deactivated customer re-registering is a legitimate flow: they get
+    the form, the owner sees the request, and approve() reactivates the
+    existing row rather than inserting a second one (primary_phone is
+    unique).
+    """
     existing = db.scalar(
-        select(Customer).where(Customer.primary_phone == phone).limit(1)
+        select(Customer)
+        .where(Customer.primary_phone == phone)
+        .where(Customer.is_active.is_(True))
+        .limit(1)
     )
     return existing is not None
 

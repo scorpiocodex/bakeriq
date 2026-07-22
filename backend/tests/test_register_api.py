@@ -320,3 +320,33 @@ class TestPostRegistration:
 
         response = client.post(f"/api/v1/register/{token}", json=_payload())
         assert response.status_code == 410
+
+    def test_deactivated_customer_may_register(
+        self, client: TestClient, db_session: Session
+    ):
+        """Only ACTIVE customers block registration. The bot routes
+        deactivated numbers to registration, so the form has to accept
+        them — otherwise it's a dead end."""
+        customer = Customer(
+            name="Deactivated User",
+            primary_phone=PHONE,
+            whatsapp_enabled=True,
+            is_active=False,
+            address_line_1="9 Old Road",
+            city="Kochi",
+            state="Kerala",
+            pincode="682001",
+        )
+        db_session.add(customer)
+        db_session.commit()
+
+        token = _issue_token(db_session)
+
+        response = client.post(f"/api/v1/register/{token}", json=_payload())
+        assert response.status_code == 200
+
+        reg = db_session.scalar(
+            select(PendingRegistration).where(PendingRegistration.phone == PHONE)
+        )
+        assert reg is not None
+        assert reg.status == "awaiting_approval"

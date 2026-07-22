@@ -173,6 +173,48 @@ class TestApproveRegistration:
         r = client.post(f"/api/v1/approvals/{reg.id}/approve")
         assert r.status_code == 401
 
+    def test_reactivates_deactivated_customer(
+        self, client: TestClient, db_session: Session, auth_headers
+    ):
+        """A deactivated customer who re-registers is reactivated in
+        place, not inserted twice — primary_phone is unique, so a blind
+        insert would 500."""
+        phone = "+911111111144"
+        old = Customer(
+            name="Old Name",
+            primary_phone=phone,
+            whatsapp_enabled=True,
+            is_active=False,
+            address_line_1="1 Old Road",
+            city="Kochi",
+            state="Kerala",
+            pincode="682001",
+            notes="Owner note that must survive",
+        )
+        db_session.add(old)
+        db_session.commit()
+        old_id = old.id
+
+        reg = _make_pending(db_session, phone=phone, name="New Name")
+
+        r = client.post(f"/api/v1/approvals/{reg.id}/approve", headers=auth_headers)
+        assert r.status_code == 200
+        # Same row, not a new one
+        assert r.json()["customer_id"] == str(old_id)
+
+        db_session.refresh(old)
+        assert old.is_active is True
+        assert old.name == "New Name"
+        assert old.address_line_1 == "12 Test Road"
+        # Owner's note survives
+        assert old.notes == "Owner note that must survive"
+
+        # Exactly one customer on that phone
+        rows = db_session.scalars(
+            select(Customer).where(Customer.primary_phone == phone)
+        ).all()
+        assert len(rows) == 1
+
 
 # ============================================================
 # POST /approvals/{id}/reject

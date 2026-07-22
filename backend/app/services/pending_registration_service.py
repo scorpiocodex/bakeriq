@@ -94,15 +94,23 @@ def create_from_webform(
 
 
 def approve(db: Session, reg: PendingRegistration) -> Customer:
-    """Owner approval path — creates the Customer row and links it.
+    """Owner approval path — creates or reactivates the Customer row.
 
-    Called by the /approvals dashboard endpoint. Field-copies the
-    registration data into a new Customer row and marks the pending
-    row as approved.
+    Two cases:
 
-    The address fields map 1:1 into Customer (both models share the
-    same shape). notes gets a "how they joined" trail so the origin
-    is visible in the admin UI later.
+    New phone → insert a Customer, field-copying the registration's
+    address (both models share the same shape, so no re-parsing).
+
+    Previously-deactivated phone → reactivate the existing row in place.
+    We can't insert a second one: primary_phone is unique, so a blind
+    INSERT would raise IntegrityError and surface as a 500 on the owner's
+    phone. Reactivating also preserves the customer's order history,
+    which is the behaviour the owner would expect.
+
+    On reactivation, name and address are refreshed from the registration
+    (the customer just told us their current details), but `notes` is
+    left alone — the owner may have written something there that
+    shouldn't be clobbered by a re-registration.
     """
     if reg.status != STATUS_AWAITING:
         raise ValueError(f"Cannot approve registration in status {reg.status!r}")
@@ -111,19 +119,33 @@ def approve(db: Session, reg: PendingRegistration) -> Customer:
             "Registration is incomplete; name must be provided before approval."
         )
 
-    customer = Customer(
-        name=reg.name,
-        primary_phone=reg.phone,
-        whatsapp_enabled=True,
-        address_line_1=reg.address_line_1,
-        address_line_2=reg.address_line_2,
-        city=reg.city,
-        state=reg.state,
-        pincode=reg.pincode,
-        notes="Auto-registered via WhatsApp webform",
-        is_active=True,
-    )
-    db.add(customer)
+    existing = db.scalar(select(Customer).where(Customer.primary_phone == reg.phone))
+
+    if existing is not None:
+        customer = existing
+        customer.name = reg.name
+        customer.address_line_1 = reg.address_line_1
+        customer.address_line_2 = reg.address_line_2
+        customer.city = reg.city
+        customer.state = reg.state
+        customer.pincode = reg.pincode
+        customer.whatsapp_enabled = True
+        customer.is_active = True
+    else:
+        customer = Customer(
+            name=reg.name,
+            primary_phone=reg.phone,
+            whatsapp_enabled=True,
+            address_line_1=reg.address_line_1,
+            address_line_2=reg.address_line_2,
+            city=reg.city,
+            state=reg.state,
+            pincode=reg.pincode,
+            notes="Auto-registered via WhatsApp webform",
+            is_active=True,
+        )
+        db.add(customer)
+
     db.flush()
 
     reg.status = STATUS_APPROVED
