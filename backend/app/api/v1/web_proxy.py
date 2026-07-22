@@ -1,29 +1,36 @@
-"""Dev-only reverse proxy: forwards /web/* requests to the customer Vite
-dev server (port 5174 inside the docker network).
+"""Dev-only reverse proxy: forwards /web/* to the customer Vite dev server
+(frontend-customer:5174) and /app/* to the dashboard Vite dev server
+(frontend:5173).
 
 Why we need this in dev:
-  - The customer-facing web app runs as its own service (frontend-customer
-    on port 5174) for Vite's hot-reload dev ergonomics.
+  - Both front ends run as their own services for Vite's hot-reload dev
+    ergonomics.
   - Twilio sandbox + ngrok free tier give us one public domain. Having
-    the api host the customer app's URL avoids needing a second public
-    tunnel.
+    the api host both front ends' URLs avoids needing extra public
+    tunnels.
   - In production, a real reverse proxy (nginx, Caddy) will do this same
-    routing in front of both the api and the built customer app — this
-    code is a dev convenience that mimics that behaviour without adding
-    a third container.
+    routing in front of the api and both built bundles — this code is a
+    dev convenience that mimics that behaviour without adding more
+    containers.
 
-How it works:
-  - GET /web/                     → proxied to frontend-customer:5174/web/
-  - GET /web/reorder/<token>      → proxied to frontend-customer:5174/web/reorder/<token>
-  - GET /web/assets/index-abc.js  → proxied to frontend-customer:5174/web/assets/index-abc.js
+Two proxied prefixes:
 
-The path is forwarded *verbatim* — Vite is configured with base='/web/'
-so it expects requests under /web/. Stripping the prefix would mismatch
-Vite's expected base and trigger redirects.
+  /web/*  → frontend-customer:5174   the customer ordering + registration app
+  /app/*  → frontend:5173            the owner dashboard
+
+Both forward the path *verbatim*. That only works because each Vite
+config declares a matching `base` — '/web/' and '/app/' respectively —
+so the dev server expects requests under its own prefix. Stripping the
+prefix would mismatch Vite's base and break asset URLs.
+
+The /app prefix exists specifically so the owner-notification WhatsApp
+card can carry a tappable link to the approvals page. Without it the
+dashboard is unreachable through the single ngrok tunnel, and the card's
+button 404s on a phone.
 
 HMR (Vite's WebSocket) is NOT proxied — dev edits hot-reload only when
-accessing the customer app directly at localhost:5174. Through the proxy
-you'd need to manually reload. Acceptable trade for dev simplicity.
+accessing each app directly on its own port. Through the proxy you'd
+need to manually reload. Acceptable trade for dev simplicity.
 """
 
 import httpx
@@ -31,9 +38,10 @@ from fastapi import APIRouter, Request, Response
 
 router = APIRouter(tags=["web-proxy"])
 
-# Target — the customer Vite dev container, reached via docker network DNS.
-# "frontend-customer" is the service name in docker-compose.yml.
+# Targets — the Vite dev containers, reached via docker network DNS.
+# These are the service names in docker-compose.yml.
 CUSTOMER_DEV_TARGET = "http://frontend-customer:5174"
+DASHBOARD_DEV_TARGET = "http://frontend:5173"
 
 # Headers we strip when forwarding — these are connection-level and would
 # confuse the dev server or break streaming. We also strip 'host' because
@@ -53,10 +61,10 @@ HOP_BY_HOP_HEADERS = {
 }
 
 
-async def _proxy(request: Request) -> Response:
-    """Forward the request to the customer dev server, preserving the
-    original path so Vite's base='/web/' matches correctly."""
-    target = f"{CUSTOMER_DEV_TARGET}{request.url.path}"
+async def _proxy(request: Request, target_base: str) -> Response:
+    """Forward the request to a Vite dev server, preserving the original
+    path so that server's configured `base` matches correctly."""
+    target = f"{target_base}{request.url.path}"
     if request.url.query:
         target = f"{target}?{request.url.query}"
 
@@ -86,33 +94,44 @@ async def _proxy(request: Request) -> Response:
     )
 
 
-# We need a route for /web (no trailing slash), /web/ (trailing slash),
-# and /web/<anything>. FastAPI's path:path matcher doesn't capture the
-# empty string, hence the dedicated route for the bare and slash cases.
+# Each prefix needs three routes: bare (no trailing slash), trailing
+# slash, and the catch-all. FastAPI's path:path matcher doesn't capture
+# the empty string, hence the dedicated bare and slash cases.
+
+PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 
 
-@router.api_route(
-    "/web",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
-    include_in_schema=False,
-)
-async def proxy_root_bare(request: Request) -> Response:
-    return await _proxy(request)
+# === /web → customer app ===================================================
 
 
-@router.api_route(
-    "/web/",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
-    include_in_schema=False,
-)
-async def proxy_root_slash(request: Request) -> Response:
-    return await _proxy(request)
+@router.api_route("/web", methods=PROXY_METHODS, include_in_schema=False)
+async def proxy_customer_bare(request: Request) -> Response:
+    return await _proxy(request, CUSTOMER_DEV_TARGET)
 
 
-@router.api_route(
-    "/web/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
-    include_in_schema=False,
-)
+@router.api_route("/web/", methods=PROXY_METHODS, include_in_schema=False)
+async def proxy_customer_slash(request: Request) -> Response:
+    return await _proxy(request, CUSTOMER_DEV_TARGET)
+
+
+@router.api_route("/web/{path:path}", methods=PROXY_METHODS, include_in_schema=False)
 async def proxy_to_customer_app(path: str, request: Request) -> Response:
-    return await _proxy(request)
+    return await _proxy(request, CUSTOMER_DEV_TARGET)
+
+
+# === /app → owner dashboard ================================================
+
+
+@router.api_route("/app", methods=PROXY_METHODS, include_in_schema=False)
+async def proxy_dashboard_bare(request: Request) -> Response:
+    return await _proxy(request, DASHBOARD_DEV_TARGET)
+
+
+@router.api_route("/app/", methods=PROXY_METHODS, include_in_schema=False)
+async def proxy_dashboard_slash(request: Request) -> Response:
+    return await _proxy(request, DASHBOARD_DEV_TARGET)
+
+
+@router.api_route("/app/{path:path}", methods=PROXY_METHODS, include_in_schema=False)
+async def proxy_to_dashboard(path: str, request: Request) -> Response:
+    return await _proxy(request, DASHBOARD_DEV_TARGET)

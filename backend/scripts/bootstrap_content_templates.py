@@ -184,7 +184,7 @@ def _create_registration_link(client: TwilioContentClient) -> str:
 
 def _create_owner_notification(client: TwilioContentClient) -> str:
     """Owner notification when a new registration lands."""
-    dashboard_url = settings.PUBLIC_BASE_URL.rstrip("/") + "/approvals"
+    dashboard_url = settings.PUBLIC_BASE_URL.rstrip("/") + "/app/approvals"
     return client.create_call_to_action(
         friendly_name="bakeriq_owner_notification",
         body="New registration:\n{{1}} — {{2}}\n\nTap to review on the dashboard.",

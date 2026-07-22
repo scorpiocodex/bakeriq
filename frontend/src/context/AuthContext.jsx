@@ -45,7 +45,7 @@ export function AuthProvider({ children }) {
         localStorage.removeItem('bakeriq_token');
         setUser(null);
         // Hard navigate so any cached query state is wiped.
-        window.location.href = '/login';
+        window.location.href = '/app/login';
     }
 
     const value = { user, loading, login, logout };
