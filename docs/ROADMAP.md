@@ -11,7 +11,7 @@ What's done, what's next, and the reasoning behind the order. Last updated 13 Ju
 | UI overhaul | ✓ Complete | Sidebar redesign, responsive layout, mobile drawer |
 | UI polish pass | ✓ Complete | Formatters, brand mark, status icons, contrast |
 | 3 — WhatsApp + LLM parser | ✓ Complete | The conversational ordering channel |
-| **3.5 — Mobile owner approval** | **Next** | Owner approves new customer registrations from their phone |
+| 3.5 — Mobile owner approval | ✓ Complete | Owner approves new customer registrations from their phone |
 | 4 — Notifications | Planned | Owner alerts + customer status updates, all via WhatsApp |
 | 5 — Inventory | Planned | Raw materials, recipes, stock movements, low-stock alerts |
 | 6 — Billing | Planned | Receipts, invoices, exports |
@@ -90,20 +90,25 @@ Everything runs end-to-end against real Twilio Sandbox: send any of `hi` / `menu
 
 Test coverage: 233 backend tests passing. The Celery worker uses `SessionLocal` for its own DB session; test fixtures monkeypatch this so worker code paths exercise the test DB.
 
-## Phase 3.5 — Mobile owner approval (next)
+## Phase 3.5 — Mobile owner approval ✓
 
-**Goal:** The owner approves new customer registrations from their phone, without needing to switch to a laptop.
+**Goal:** A customer registers themselves; the owner approves from their phone without opening a laptop.
 
-Context: currently when a new customer sends `join <sandbox-code>` and messages the bot, they're marked "pending owner approval." The owner sees a notification, then has to open the dashboard on a laptop to approve. In practice the owner is often on the go — approvals stall, customers can't order.
+The old flow asked for name and area over two WhatsApp turns, then left the request sitting until the owner happened to check the dashboard. In practice approvals stalled and customers couldn't order.
 
-Planned:
+Built and shipped:
 
-- **Notification card via WhatsApp** — new registrations trigger a Content Template message to the owner's phone with an "Open dashboard" button, deep-linking to the pending-approvals page
-- **Persistent login on mobile** — the dashboard's JWT handling keeps the owner logged in across sessions so tapping the notification button doesn't require re-authenticating every time
-- **Pending-approvals page** — dedicated view listing all customers awaiting approval, with per-row Approve / Reject actions. Shows the customer's name, phone, and any notes they included in their first message
-- **Notification badge** — count of pending approvals visible in the dashboard sidebar and TopBar, always. Tapping navigates to the approvals page
+- **Registration by webform.** An unrecognised number gets a `bakeriq_registration_link` Content Template with a "Register now" button. It opens `/web/register/{token}` — a form collecting name and a full delivery address, with the phone pre-filled and read-only. The old bot state machine is gone.
+- **One-shot registration tokens.** New `RegistrationToken` model: bound to the phone that messaged the bot, valid 12 hours, consumed on submission. Kept separate from the cart-link `WebLink` table because registration happens before a Customer exists. Consumed on already-registered conflicts too, so a leaked token can't be replayed.
+- **Owner notification.** Submitting the form sends the owner a `bakeriq_owner_notification` card carrying the registrant's name and phone plus an "Open dashboard" button. Fires synchronously but never raises — a Twilio failure can't fail the customer's registration.
+- **Approvals API.** `GET /approvals`, `GET /approvals/count`, `POST /approvals/{id}/approve`, `POST /approvals/{id}/reject`, all JWT-authed. Approve field-copies the address straight into a new Customer; both actions 409 if the row is already terminal, so a double-tap on mobile can't create duplicates.
+- **Approvals page.** Mobile-first cards rather than a table, since the owner arrives from a phone notification. Each card carries everything needed to decide — name, phone, address, how long they've waited. Reject prompts for an optional reason.
+- **Sidebar badge.** Pending count next to the Approvals nav item, polling every 30s, hidden at zero.
+- **`/app` proxy.** The dashboard now serves under `/app` so the notification's CTA resolves through the single ngrok tunnel. Mirrors the existing `/web` proxy; in production nginx gives three prefixes — `/api`, `/web`, `/app`.
 
-Design notes: the "in-app browser" question (webview vs PWA vs deep link into a native install) needs a decision before implementation. Free-tier webviews on Android and iOS both have some cookie-isolation caveats worth prototyping. Notification-badge count updates should use the existing TanStack Query patterns (`refetchInterval` on the dashboard, invalidation on approval action).
+Verified end to end from a real phone: registration form → owner card → tap through to the approvals page → approve → Customer created. 274 backend tests passing.
+
+**Known gap:** `find_customer_by_phone` filters on `is_active` but the registration endpoint's already-registered check doesn't, so a deactivated customer would be routed to registration and then blocked at the form. Not hit in practice yet.
 
 ## Phase 4 — Notifications (later)
 
