@@ -78,9 +78,11 @@ Each entry follows the format: *what was decided, what the alternatives were, wh
 
 **Why:** Single-tenant internal tool, single user (the owner), no SSO requirements. JWT is enough — the frontend stores the token in `localStorage`, includes it on every request, and gets a 401 if it expires. No CSRF concerns because there are no cookies.
 
-**Token lifetime:** Currently long-lived (8 hours). Short enough that a stolen token doesn't grant indefinite access, long enough that the owner isn't logging in every hour.
+**Token lifetime:** 7 days (`ACCESS_TOKEN_EXPIRE_MINUTES=10080`). Long by general standards, and deliberately so: there is no refresh-token flow, so a shorter lifetime translates directly into the owner re-authenticating. Since Phase 3.5 the owner often reaches the dashboard by tapping a WhatsApp notification on their phone, and hitting a login screen at that moment defeats the point of the notification.
 
-**What could change the answer:** If we ever add multi-user or chef-role separation, we'd want refresh tokens and shorter access token lifetimes. Probably with the chef role in Phase 4.
+The blast radius is one bakery's order list, on a single-user internal tool, with no payment capability. That's the trade being made.
+
+**What could change the answer:** a refresh-token flow would let the access token drop to an hour or less without costing the owner anything — worth doing alongside the chef role, when there's more than one account to protect. Payment capability would force it.
 
 ## ADR-8 — Twilio first, Meta WhatsApp Business Platform later
 
