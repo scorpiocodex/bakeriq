@@ -1,0 +1,30 @@
+# Dev container for the customer-facing Vite app. Mirrors the pattern
+# used by the owner frontend's Dockerfile: node base, install deps,
+# source comes in via volume mount for hot-reload.
+#
+# Production builds will use a separate Dockerfile that runs
+# `npm run build` and serves via nginx; this is dev-only.
+
+FROM node:20-slim
+
+# Match host UID/GID so files created in the mounted volume aren't
+# root-owned on the host. Same UID/GID arg pattern as the api and
+# frontend services use.
+ARG UID=1000
+ARG GID=1000
+
+WORKDIR /app
+
+# Copy package files and install before source — Docker layer caching
+# means a code edit doesn't reinstall deps.
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Source comes in via the volume mount, not COPY, so HMR works.
+
+EXPOSE 5174
+
+# --host 0.0.0.0 is required for Vite to be reachable from outside the
+# container. --port 5174 keeps the customer app on a fixed port that
+# won't collide with the owner dashboard (5173).
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5174"]

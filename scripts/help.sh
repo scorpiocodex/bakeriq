@@ -21,26 +21,36 @@ print_group() {
 print_target() {
   local target="$1"
   local description="$2"
-  printf "  ${C_GREEN}%-16s${C_RESET}${C_DIM}%s${C_RESET}\n" "$target" "$description"
+  printf "  ${C_GREEN}%-20s${C_RESET}${C_DIM}%s${C_RESET}\n" "$target" "$description"
 }
 
+print_group "Dev stack"
+print_target "dev-up"            "Start everything (docker + ngrok) with auto-recovery"
+echo
+
 print_group "Database"
-print_target "reset-db"        "Wipe dev DB → migrate → seed (asks for confirmation)"
-print_target "seed"            "Re-run seed data only (DB already exists)"
-print_target "migrate"         "Apply pending Alembic migrations"
-print_target "migration"       "Generate a new auto-detected migration (prompts for message)"
+print_target "reset-db"          "Wipe dev DB → migrate → seed (asks for confirmation)"
+print_target "seed"              "Re-run seed data only (DB already exists)"
+print_target "migrate"           "Apply pending Alembic migrations"
+print_target "migration"         "Generate a new auto-detected migration (prompts for message)"
 echo
 
 print_group "Tests"
-print_target "test"            "Run full pytest suite (verbose)"
-print_target "test-fast"       "Run pytest with -x (stop at first failure)"
+print_target "test"              "Run full pytest suite (verbose)"
+print_target "test-fast"         "Run pytest with -x (stop at first failure)"
 echo
 
 print_group "Containers"
-print_target "ps"              "Show docker compose container status"
-print_target "logs"            "Tail api container logs (Ctrl+C to exit)"
-print_target "shell-api"       "Bash shell inside the api container"
-print_target "shell-db"        "psql shell inside the dev database"
+print_target "ps"                "Show docker compose container status"
+print_target "logs"              "Tail api container logs (Ctrl+C to exit)"
+print_target "shell-api"         "Bash shell inside the api container"
+print_target "shell-db"          "psql shell inside the dev database"
+echo
+
+print_group "WhatsApp / ngrok"
+print_target "ngrok-check"       "Show ngrok hostname, flag template URL drift"
+print_target "templates-refresh" "Re-bootstrap WhatsApp Content Templates (after ngrok rotation)"
+print_target "whatsapp-smoke"    "Send one test nav-card to verify Twilio + templates end-to-end"
 echo
 
 echo "${C_DIM}Type ${C_RESET}${C_BOLD}make <target>${C_RESET}${C_DIM} to run.${C_RESET}"

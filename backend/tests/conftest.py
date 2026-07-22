@@ -84,3 +84,26 @@ def auth_headers(test_user):
     """Authorization header fixture — most customer tests need this."""
     token = create_access_token(subject=test_user.id)
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture(scope="function", autouse=True)
+def mute_owner_notification(monkeypatch):
+    """Prevent tests from firing real WhatsApp messages.
+
+    tests/test_register_api.py POSTs to /api/v1/register/{token}, which
+    calls owner_notification_service.notify_new_registration() → Twilio.
+    Without this, a full suite run burns ~5 messages of the 50/day
+    sandbox quota and spams the owner's phone.
+
+    autouse so no test has to remember to opt in. Patched at the module
+    attribute (not the import site) because register.py does
+    `from app.services import owner_notification_service` and resolves
+    the function at call time.
+    """
+    from app.services import owner_notification_service
+
+    monkeypatch.setattr(
+        owner_notification_service,
+        "notify_new_registration",
+        lambda db, *, name, phone: None,
+    )

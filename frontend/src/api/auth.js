@@ -40,5 +40,5 @@ export async function getMe() {
 // for revoked tokens, we'd POST to /auth/logout here.
 export function logout() {
     localStorage.removeItem('bakeriq_token');
-    window.location.href = '/login';
+    window.location.href = '/app/login';
 }

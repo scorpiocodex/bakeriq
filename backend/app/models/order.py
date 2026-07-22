@@ -20,16 +20,23 @@ Relationships:
     product referenced by any order line.
 """
 
+from __future__ import annotations
+
 from datetime import date, datetime
 from enum import Enum
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from app.models.base import Base
-from sqlalchemy import Date, DateTime
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func, Boolean
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.customer import Customer
+    from app.models.product import Product
 
 
 class OrderStatus(str, Enum):
@@ -70,6 +77,15 @@ class Order(Base):
         index=True,
     )
 
+    # Drafts are bot-created orders awaiting customer confirmation.
+    # Manual orders (via dashboard) are never drafts. Bot creates with
+    # is_draft=True; flips to False on customer YES / 'Place order' tap.
+    # Dashboard list endpoints filter is_draft=False by default so drafts
+    # don't appear in the active order list until confirmed.
+    is_draft: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+
     # Which day's business this order belongs to. Defaults to today,
     # editable for back-entry. The "today's orders" view filters on this.
     order_date: Mapped[date] = mapped_column(
@@ -105,7 +121,7 @@ class Order(Base):
 
     # To-one to customer; joined so order displays carry customer name
     # without a second query.
-    customer: Mapped["Customer"] = relationship(  # noqa: F821
+    customer: Mapped["Customer"] = relationship(
         "Customer",
         lazy="joined",
     )
@@ -155,7 +171,7 @@ class OrderItem(Base):
 
     # To-one to product, joined. Kept for linking/analytics even though
     # display uses the snapshot fields.
-    product: Mapped["Product"] = relationship(  # noqa: F821
+    product: Mapped["Product"] = relationship(
         "Product",
         lazy="joined",
     )

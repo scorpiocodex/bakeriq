@@ -20,6 +20,12 @@
 help:
 	@bash scripts/help.sh
 
+# === Dev stack ===============================================================
+
+.PHONY: dev-up
+dev-up:
+	@bash scripts/dev-up.sh
+
 # === Database ================================================================
 
 .PHONY: reset-db
@@ -65,3 +71,17 @@ shell-api:
 .PHONY: shell-db
 shell-db:
 	@bash scripts/shell-db.sh
+
+# === WhatsApp / ngrok ========================================================
+
+.PHONY: ngrok-check
+ngrok-check:
+	@bash scripts/ngrok-check.sh
+
+.PHONY: templates-refresh
+templates-refresh:
+	@bash scripts/templates-refresh.sh
+
+.PHONY: whatsapp-smoke
+whatsapp-smoke:
+	@bash scripts/whatsapp-smoke.sh

@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.v1 import web_proxy
 from app.api.v1.router import api_router
 from app.core.config import settings
 
@@ -11,6 +12,7 @@ app = FastAPI(
     version="0.1.0",
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url="/redoc" if settings.DEBUG else None,
+    redirect_slashes=False,
 )
 
 if settings.BACKEND_CORS_ORIGINS:
@@ -23,6 +25,7 @@ if settings.BACKEND_CORS_ORIGINS:
     )
 
 app.include_router(api_router)
+app.include_router(web_proxy.router)
 
 
 @app.get("/health", tags=["meta"])

@@ -42,8 +42,8 @@
   // Join the docker-compose network so this container can reach the
   // running api/db/redis services by their service names. Adjust the
   // network name if your `docker compose ps` shows a different one
-  // (typically `<project-folder>_default` — for you, `bakeriq_default`)
-  "runArgs": ["--network=bakeriq_default"],
+  // (typically `<project-folder>_default` — for you, `bakeriq`)
+  "runArgs": ["--network=bakeriq"],
 
   // Mount the repo. The default mount is fine, but we set workspaceFolder
   // explicitly for clarity in terminal paths
@@ -64,7 +64,7 @@
   // has the real types (fastapi, sqlalchemy, etc.) available for IntelliSense.
   // This is independent of the api container — that one has its own venv;
   // this is just for editor tooling.
-  "postCreateCommand": "pip install --user -r backend/requirements.txt && cd frontend && npm ci",
+  "postCreateCommand": "pip install --user --upgrade -r backend/requirements.txt && cd frontend && npm ci",
 
   "customizations": {
     "vscode": {
