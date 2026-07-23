@@ -33,6 +33,7 @@ from app.models.product import Product
 from app.schemas.order import OrderCreate, OrderItemWrite
 from app.services import (
     cart_cache,
+    inventory_service,
     order_service,
     template_replies,
     token_service,
@@ -104,6 +105,12 @@ def _build_menu(db: Session) -> list[dict]:
             "unit_label": p.unit_label,
             "category_id": str(p.category_id),
             "category_name": p.category.name if p.category else None,
+            # Advisory only. The exact count isn't exposed — it drifts
+            # (someone sells a packet over the counter without touching
+            # the dashboard), so promising "2 left" invites complaints
+            # when a customer orders 3 and the bakery has 1. Ordering is
+            # never blocked on this; the owner decides.
+            "is_low_stock": inventory_service.is_low_stock(p),
         }
         for p in products
     ]

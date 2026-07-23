@@ -59,6 +59,9 @@ export default function MenuPicker({ menu, cartItemIds, onAdd }) {
                         <p className="text-sm font-medium text-gray-900">{product.name}</p>
                         <p className="text-xs text-gray-500">
                           {formatRupees(product.unit_price)} / {product.unit_label}
+                          {product.is_low_stock && (
+                            <span className="ml-2 text-amber-600 font-medium">Low stock</span>
+                          )}
                         </p>
                       </div>
                       <Plus size={18} className="text-brand-600 flex-shrink-0" />
