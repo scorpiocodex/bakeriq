@@ -16,6 +16,7 @@ import NewOrderPage from './pages/NewOrderPage';
 import EditPage from './pages/EditPage';
 import RegistrationPage from './pages/RegistrationPage';
 import LandingPage from './pages/LandingPage';
+import InvoicePage from './pages/InvoicePage';
 
 // The basename is set so React Router works both when accessed directly
 // (basename='') for dev at localhost:5174 and when accessed via the
@@ -36,6 +37,7 @@ function App() {
         <Route path="/register/:token" element={<RegistrationPage />} />
         <Route path="/" element={<LandingPage />} />
         <Route path="*" element={<LandingPage />} />
+        <Route path="/invoice/:token" element={<InvoicePage />} />
       </Routes>
     </BrowserRouter>
   );

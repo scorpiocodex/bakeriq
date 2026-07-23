@@ -45,3 +45,14 @@
            transition-colors duration-150;
   }
 }
+
+/* Invoice printing — the customer's own share sheet handles the rest. */
+@media print {
+  body {
+    background: #fff;
+  }
+  .app-container {
+    max-width: none;
+    padding: 0;
+  }
+}

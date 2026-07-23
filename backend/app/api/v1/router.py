@@ -3,11 +3,13 @@ from fastapi import APIRouter
 from app.api.v1 import (
     approvals,
     auth,
+    billing,
     cart,
     categories,
     customers,
     dashboard,
     default_orders,
+    invoice,
     orders,
     products,
     register,
@@ -21,6 +23,8 @@ api_router.include_router(customers.router)
 api_router.include_router(categories.router)
 api_router.include_router(products.router)
 api_router.include_router(register.router)
+api_router.include_router(billing.router)
+api_router.include_router(invoice.router)
 api_router.include_router(default_orders.router)
 api_router.include_router(orders.router)
 api_router.include_router(orders.prefill_router)
