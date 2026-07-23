@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     CONTENT_SID_ORDER_CONFIRMATION: str | None = None
     CONTENT_SID_REGISTRATION_LINK: str | None = None
     CONTENT_SID_OWNER_NOTIFICATION: str | None = None
+    CONTENT_SID_INVOICE_LINK: str | None = None
 
     # === Owner notification ===
     # WhatsApp address for the bakery owner. Format: 'whatsapp:+91...'
@@ -88,6 +89,20 @@ class Settings(BaseSettings):
     POSTGRES_TEST_USER: str = "bakeriq_test"
     POSTGRES_TEST_PASSWORD: str = "bakeriq_test_password"
     POSTGRES_TEST_DB: str = "bakeriq_test"
+
+    # === Business details ===
+    # Appear on invoice headers. In .env because there's no settings
+    # table yet — when Settings grows a "Bakery info" section these move
+    # to the database and billing_service._business_details() reads from
+    # there instead.
+    BUSINESS_NAME: str = "BakeriQ"
+    BUSINESS_ADDRESS_LINE_1: str | None = None
+    BUSINESS_ADDRESS_LINE_2: str | None = None
+    BUSINESS_CITY: str | None = None
+    BUSINESS_STATE: str | None = None
+    BUSINESS_PINCODE: str | None = None
+    BUSINESS_PHONE: str | None = None
+    BUSINESS_EMAIL: str | None = None
 
     @computed_field
     @property
