@@ -25,7 +25,16 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -64,6 +73,29 @@ class Product(Base):
     is_available_today: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
+
+    # === Inventory (Phase 5) =================================================
+    # Only sealed, packaged goods carry stock — ladoo packets, bread, biscuits,
+    # some cakes. Made-to-order items (puffs and the like) are baked and sold
+    # the same day, so "how many are in stock" isn't a meaningful question for
+    # them; is_available_today already covers whether they're being made.
+    #
+    # Because a product is a single selling configuration (see the module
+    # docstring), stock is always counted in that product's own unit. A packet
+    # of 25 ladoos is its own product row with its own count — there's no
+    # pack-size conversion anywhere.
+
+    is_stockable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false", index=True
+    )
+
+    # Nullable rather than defaulting to 0, so "not tracked" is distinct from
+    # "tracked, and we have none". Only meaningful when is_stockable is true.
+    stock_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Warn at or below this. Nullable so the owner can track a product's count
+    # without wanting to be nagged about it.
+    low_stock_threshold: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     aliases: Mapped[list] = mapped_column(
         JSONB,

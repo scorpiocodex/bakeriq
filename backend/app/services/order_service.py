@@ -14,14 +14,16 @@ template (the convenience wired to the "Load default order" button).
 from datetime import date
 from uuid import UUID
 
+from fastapi import HTTPException, status
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
 from app.models.customer import Customer
 from app.models.default_order import DefaultOrder
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product
 from app.schemas.order import OrderCreate, OrderItemWrite, OrderUpdate
-from fastapi import HTTPException, status
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from app.services import inventory_service
 
 # === Allowed status transitions =============================================
 # Forward flow plus cancel-from-anywhere. A cancelled order is terminal.
@@ -141,6 +143,14 @@ def create_order(db: Session, payload: OrderCreate) -> Order:
         items=items,
     )
     db.add(order)
+
+    # Reserve stock at placement rather than delivery. Without this two
+    # customers could each order the last packet in the morning and neither
+    # would see a warning. Flush first so the items have ids and are
+    # attached to the order.
+    db.flush()
+    inventory_service.deduct_for_order(db, order)
+
     db.commit()
     db.refresh(order)
     return order
@@ -204,9 +214,15 @@ def update_order(db: Session, order_id: UUID, payload: OrderUpdate) -> Order:
         order.notes = payload.notes
 
     if payload.items is not None:
+        # Give back what the old lines held before the cascade drops them.
+        inventory_service.restore_for_order(db, order)
+
         items, total = _build_items(db, payload.items)
         order.items = items  # replace-all via delete-orphan cascade
         order.total_amount = total
+
+        db.flush()
+        inventory_service.deduct_for_order(db, order)
 
     db.commit()
     db.refresh(order)
@@ -216,6 +232,14 @@ def update_order(db: Session, order_id: UUID, payload: OrderUpdate) -> Order:
 def change_status(db: Session, order_id: UUID, target: OrderStatus) -> Order:
     order = get_order(db, order_id)
     _validate_transition(order.status, target)
+
+    # Cancelling frees what the order held. Only on the transition into
+    # cancelled — _validate_transition already blocks the reverse, but
+    # checking the current status too means a repeated cancel can't
+    # restore the same stock twice.
+    if target == OrderStatus.cancelled and order.status != OrderStatus.cancelled:
+        inventory_service.restore_for_order(db, order)
+
     order.status = target
     db.commit()
     db.refresh(order)
