@@ -211,6 +211,23 @@ def _create_invoice_link(client: TwilioContentClient) -> str:
     )
 
 
+def _create_approved(client: TwilioContentClient) -> str:
+    """Welcome card sent when the owner approves a registration.
+
+    Two buttons rather than three: a brand-new customer has no orders, so
+    Reorder last and Order status would both lead nowhere.
+    """
+    return client.create_quick_reply(
+        friendly_name="bakeriq_approved",
+        body=("Good news {{1}} — you're approved!\n\nYou can start ordering now."),
+        actions=[
+            QuickReplyAction(title=BTN_NEW, id="btn_new_order"),
+            QuickReplyAction(title=BTN_MENU, id="btn_menu"),
+        ],
+        variables={"1": "name"},
+    )
+
+
 TEMPLATES: list[TemplateSpec] = [
     TemplateSpec(
         friendly_name="bakeriq_greeting",
@@ -251,6 +268,11 @@ TEMPLATES: list[TemplateSpec] = [
         friendly_name="bakeriq_invoice_link",
         env_var="CONTENT_SID_INVOICE_LINK",
         creator=_create_invoice_link,
+    ),
+    TemplateSpec(
+        friendly_name="bakeriq_approved",
+        env_var="CONTENT_SID_APPROVED",
+        creator=_create_approved,
     ),
 ]
 

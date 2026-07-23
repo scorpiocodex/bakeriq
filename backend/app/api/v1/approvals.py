@@ -33,6 +33,7 @@ from app.schemas.approval import (
     RejectRequest,
     RejectResponse,
 )
+from app.services import customer_notification_service
 from app.services import pending_registration_service as pr_svc
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,11 @@ def approve_registration(
         )
         raise HTTPException(status_code=422, detail=str(e))
 
+    # Tell the customer. Fires after the commit so a Twilio failure can't
+    # undo an approval that already happened — the service swallows its
+    # own errors for the same reason. Both the webform and the bot promise
+    # this message; without it they're lying.
+    customer_notification_service.notify_approved(db, customer)
     logger.info(
         f"approve_registration: {current_user.email} approved "
         f"pending_registration={registration_id} → customer={customer.id}"

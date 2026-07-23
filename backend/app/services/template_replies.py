@@ -205,3 +205,28 @@ def invoice_link_reply(token: str, link: str) -> Reply:
         variables={"1": token},
         log_body=f"Here's your latest invoice: {link}",
     )
+
+
+def approved_reply(name: str) -> Reply:
+    """Welcome card for a newly approved customer.
+
+    Buttons are New order and Menu only — not the usual three. A customer
+    approved thirty seconds ago has no order history, so Reorder last and
+    Order status would both dead-end. The nav card offers all three later,
+    once those actions mean something.
+    """
+    first_name = name.split()[0] if name else "there"
+    sid = settings.CONTENT_SID_APPROVED
+    if sid is None:
+        return Reply.text(
+            f"Good news {first_name} — you're approved!\n\n"
+            "You can start ordering now. Reply *new order* to begin, "
+            "or *menu* to see what's available today."
+        )
+    return Reply.template(
+        sid,
+        variables={"1": first_name},
+        log_body=(
+            f"Good news {first_name} — you're approved! You can start ordering now."
+        ),
+    )

@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     CONTENT_SID_REGISTRATION_LINK: str | None = None
     CONTENT_SID_OWNER_NOTIFICATION: str | None = None
     CONTENT_SID_INVOICE_LINK: str | None = None
+    CONTENT_SID_APPROVED: str | None = None
 
     # === Owner notification ===
     # WhatsApp address for the bakery owner. Format: 'whatsapp:+91...'

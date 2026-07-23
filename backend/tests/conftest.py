@@ -87,23 +87,29 @@ def auth_headers(test_user):
 
 
 @pytest.fixture(scope="function", autouse=True)
-def mute_owner_notification(monkeypatch):
+def mute_outbound_notifications(monkeypatch):
     """Prevent tests from firing real WhatsApp messages.
 
-    tests/test_register_api.py POSTs to /api/v1/register/{token}, which
-    calls owner_notification_service.notify_new_registration() → Twilio.
-    Without this, a full suite run burns ~5 messages of the 50/day
-    sandbox quota and spams the owner's phone.
+    Two triggers so far: submitting the registration form notifies the
+    owner, and approving one notifies the customer. Both call Twilio
+    directly, so without this a full suite run burns sandbox quota and
+    spams two real phones.
 
-    autouse so no test has to remember to opt in. Patched at the module
-    attribute (not the import site) because register.py does
-    `from app.services import owner_notification_service` and resolves
-    the function at call time.
+    Patched at the module attribute rather than the import site, because
+    the callers resolve the function at call time.
     """
-    from app.services import owner_notification_service
+    from app.services import (
+        customer_notification_service,
+        owner_notification_service,
+    )
 
     monkeypatch.setattr(
         owner_notification_service,
         "notify_new_registration",
         lambda db, *, name, phone: None,
+    )
+    monkeypatch.setattr(
+        customer_notification_service,
+        "notify_approved",
+        lambda db, customer: None,
     )
