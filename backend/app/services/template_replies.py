@@ -186,3 +186,22 @@ def owner_registration_notification_reply(name: str, phone: str) -> Reply:
         variables={"1": name, "2": phone},
         log_body=(f"New registration: {name} — {phone}. Review at {dashboard_url}."),
     )
+
+
+def invoice_link_reply(token: str, link: str) -> Reply:
+    """
+    CTA card linking to the customer's latest invoice.
+    Sent when the customer taps Invoice on the order-confirmation card.
+    The token is minted at that moment rather than baked into the
+    confirmation, so it's fresh whenever they ask.
+    """
+    sid = settings.CONTENT_SID_INVOICE_LINK
+    if sid is None:
+        return Reply.text(
+            f"Here's your latest invoice:\n\n{link}\n\n_The link works for 24 hours._"
+        )
+    return Reply.template(
+        sid,
+        variables={"1": token},
+        log_body=f"Here's your latest invoice: {link}",
+    )

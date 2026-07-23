@@ -62,6 +62,7 @@ ENV_FILE = REPO_ROOT / ".env"
 # token's `kind` field from the DB to figure out whether this is a new
 # order, reorder, or edit flow. So one URL pattern, three scenarios.
 CART_LINK_PATH = "/web/new/{{1}}"
+INVOICE_LINK_PATH = "/web/invoice/{{1}}"
 
 # Button titles MUST stay verbatim — when the customer taps a button,
 # Twilio delivers Body=<title> on the inbound webhook, and the existing
@@ -72,6 +73,7 @@ BTN_REORDER = "Reorder last"
 BTN_NEW = "New order"
 BTN_STATUS = "Order status"
 BTN_MENU = "Menu"
+BTN_INVOICE = "Invoice"
 
 
 @dataclass(frozen=True)
@@ -165,7 +167,7 @@ def _create_order_confirmation(client: TwilioContentClient) -> str:
         ),
         actions=[
             QuickReplyAction(title=BTN_STATUS, id="btn_order_status"),
-            QuickReplyAction(title=BTN_MENU, id="btn_menu"),
+            QuickReplyAction(title=BTN_INVOICE, id="btn_invoice"),
             QuickReplyAction(title=BTN_NEW, id="btn_new_order"),
         ],
         variables={"1": "order_id", "2": "items", "3": "total"},
@@ -190,6 +192,22 @@ def _create_owner_notification(client: TwilioContentClient) -> str:
         body="New registration:\n{{1}} — {{2}}\n\nTap to review on the dashboard.",
         actions=[UrlAction(title="Open dashboard", url=dashboard_url)],
         variables={"1": "name", "2": "phone"},
+    )
+
+
+def _create_invoice_link(client: TwilioContentClient) -> str:
+    """
+    CTA card carrying a link to the customer's latest invoice.
+    Sent in response to the Invoice quick-reply. A separate message
+    because Twilio templates can't mix quick-reply and URL buttons —
+    same reason the cart link is its own card.
+    """
+    invoice_url = settings.PUBLIC_BASE_URL.rstrip("/") + INVOICE_LINK_PATH
+    return client.create_call_to_action(
+        friendly_name="bakeriq_invoice_link",
+        body="Here's your latest invoice:",
+        actions=[UrlAction(title="View invoice", url=invoice_url)],
+        variables={"1": "token"},
     )
 
 
@@ -228,6 +246,11 @@ TEMPLATES: list[TemplateSpec] = [
         friendly_name="bakeriq_owner_notification",
         env_var="CONTENT_SID_OWNER_NOTIFICATION",
         creator=_create_owner_notification,
+    ),
+    TemplateSpec(
+        friendly_name="bakeriq_invoice_link",
+        env_var="CONTENT_SID_INVOICE_LINK",
+        creator=_create_invoice_link,
     ),
 ]
 

@@ -54,3 +54,15 @@ export async function submitRegistration(token, payload) {
   const { data } = await api.post(`/api/v1/register/${token}`, payload);
   return data;
 }
+
+/**
+ * GET /api/v1/invoice/{token}
+ *
+ * Returns the customer's latest invoice — every order on the day of
+ * their most recent one. Throws 404 if the token is expired, the wrong
+ * kind, or the customer has never ordered.
+ */
+export async function fetchInvoice(token) {
+  const { data } = await api.get(`/api/v1/invoice/${token}`);
+  return data;
+}
