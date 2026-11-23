@@ -1,4 +1,5 @@
-fastapi==0.115.0
+fastapi==0.165.0
+starlette==1.10.0  # pinned so Dependabot tracks it; FastAPI requires >=1.6
 uvicorn[standard]==0.32.0
 
 # Database

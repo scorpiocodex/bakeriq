@@ -17,7 +17,7 @@ WORKDIR /app
 
 # Copy requirements first to maximise Docker layer cache
 COPY --chown=app:app requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip \
+RUN pip install --no-cache-dir --upgrade pip setuptools \
     && pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest
