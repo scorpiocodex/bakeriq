@@ -428,6 +428,16 @@ The semantics differ too: cart tokens are customer-bound with a 30-minute expiry
 
 **What it costs:** two HTTP client libraries are installed until the Ollama SDK moves off `httpx<0.28`. The full suite now runs with no warnings.
 
+## ADR-32 — Celery 5.7 with redis-py 8, replacing the kombu pin
+
+**Context:** `celery[redis]==5.4.0` allows any kombu below 6 but caps redis-py below 6. kombu 5.7.0 (3 November 2026) refuses redis-py older than 6.1, so a fresh image build resolved a pair that cannot work together and the worker looped on `VersionMismatch` while its container showed as Up. The first fix was a stopgap pin, `kombu==5.6.2`, the newest kombu that accepts the redis-py Celery 5.4.0 allows. It worked, but it froze the worker on a Celery line that cannot take a current redis-py.
+
+**Decision:** move to Celery 5.7.0, which takes its Redis dependency through `kombu[redis]` (redis-py 6.4 to below 9), with `kombu==5.7.0` and `redis==8.2.0` pinned on their own lines. Celery does not pin redis-py itself, so without an explicit line Dependabot would never see it. The stopgap pin and its comment are gone; the regression test that opens a kombu transport (`tests/test_celery_transport.py`) stays and now guards the new pairing.
+
+**What was checked:** the full suite (418 passed), `pip check` clean, and, because the suite runs tasks eagerly and never opens a broker connection, a real end-to-end run. A side worker on its own queue, started from the new image, answered a ping. A real `parse_free_text` task went through the Redis broker to a real Ollama call and came back through the result backend in 8.3 seconds. With Ollama stopped, the next task went through `RETRY` and ended in `FAILURE` with `httpx.ConnectError`, which confirms autoretry and the `httpx` choice in [ADR-31](#adr-31--our-own-http-calls-use-httpx2-the-ollama-sdk-keeps-httpx). The old Celery 5.4 worker and the new client answered the same broadcast ping on one broker. The documented breaking changes since 5.4 (global CLI options must come before the sub-command, and the old setting names) do not apply: the worker command already puts `-A` before `worker`, and the config uses the current lower-case names.
+
+**What it costs:** redis-py moves across three major versions (5 to 8). The app only uses the basic `Redis(...)` client with `set`, `get`, `expire` and `delete`, and the tests that exercise it pass, but it is a bigger step than a patch bump. The retry delays are jittered by Celery's default (the log showed 0 to 2 seconds against a configured backoff of 5), so "about 5/10/20 seconds" in the task comments is an upper bound, as it was before the upgrade.
+
 ---
 
 ## Adding new decisions

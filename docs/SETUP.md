@@ -6,7 +6,7 @@ It's written for someone who's never touched the project before. If you've done 
 
 Expect **60-90 minutes** end-to-end on your first pass, most of that waiting for Docker builds and the Ollama model download.
 
-> **What has been verified.** The original instructions were written on Debian Linux. On 23 November 2026 two parts were re-run on Windows 11 with Docker Desktop: the Docker part (steps 1 and 4: build, migrate, seed, log in, run the 396-test suite) and Ollama host-reach (a container calling an Ollama server running on the Windows host, including a real call to the order parser). The Twilio and ngrok steps (3 and 5–8) were **not** re-run. Step 2d (pulling the model) wasn't either: the pinned `llama3.2:3b` wasn't installed on that machine, so the parser check used `llama3.2:1b-instruct-q4_K_M`. The Linux-only host steps (2a–2c) don't apply on Windows and weren't tried there. macOS is untested.
+> **What has been verified.** The original instructions were written on Debian Linux. On 23 November 2026 two parts were re-run on Windows 11 with Docker Desktop: the Docker part (steps 1 and 4: build, migrate, seed, log in, run the 418-test suite) and Ollama host-reach (a container calling an Ollama server running on the Windows host, including a real call to the order parser). The Twilio and ngrok steps (3 and 5–8) were **not** re-run. Step 2d (pulling the model) wasn't either: the pinned `llama3.2:3b` wasn't installed on that machine, so the parser check used `llama3.2:1b-instruct-q4_K_M`. The Linux-only host steps (2a–2c) don't apply on Windows and weren't tried there. macOS is untested.
 
 ---
 
