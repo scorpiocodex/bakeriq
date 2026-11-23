@@ -71,15 +71,18 @@ class Settings(BaseSettings):
     CONTENT_SID_APPROVED: str | None = None
 
     # === Owner notification ===
-    # WhatsApp address for the bakery owner. Format: 'whatsapp:+91...'
+    # The bakery owner's WhatsApp number in international format, e.g.
+    # '+91XXXXXXXXXX'. A 'whatsapp:' prefix is accepted and stripped.
     # If unset, owner notifications are logged-and-skipped (dev-friendly).
     OWNER_WHATSAPP_PHONE: str | None = None
 
     # Public base URL Twilio uses
     PUBLIC_BASE_URL: str = "http://localhost:8000"
 
-    # Customer web app URL (for links in messages)
-    CUSTOMER_WEB_BASE_URL: str = "http://localhost:5174"
+    # Customer web app URL (for links in messages). The customer app is
+    # served under the /web/ prefix, so the base must include it:
+    # links are built as <base>/<kind>/<token>.
+    CUSTOMER_WEB_BASE_URL: str = "http://localhost:5174/web"
 
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = Field(default_factory=list)
