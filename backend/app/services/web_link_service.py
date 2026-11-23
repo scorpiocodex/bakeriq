@@ -5,7 +5,8 @@ formats the URL the customer taps in their WhatsApp message.
 
 URL shape:
   CUSTOMER_WEB_BASE_URL + '/<kind>/<token>'
-  e.g. https://customer-abc.ngrok-free.dev/reorder/8u4cv-VKz9...
+  e.g. https://customer-abc.ngrok-free.dev/web/reorder/8u4cv-VKz9...
+  (the customer app lives under /web, so CUSTOMER_WEB_BASE_URL ends in /web)
 
 The kind determines which page the customer web app router renders:
   - 'reorder' → /reorder/:token → ReorderPage (last order pre-filled)

@@ -13,11 +13,10 @@
 #   - `make templates-refresh`, to verify the new SIDs work
 #   - A long break (days), to make sure nothing rotted on the Twilio side
 #
-# Configure the destination phone via env var:
-#   SMOKE_TEST_PHONE=+919999000000 make whatsapp-smoke
-#
-# Default is the maintainer's number. Override if you've forked or are
-# running this on a different account.
+# The destination phone is required and has no default, so a fork can never
+# message someone else's number by accident. Use your own number, in
+# international format, and make sure it has joined your Twilio sandbox:
+#   SMOKE_TEST_PHONE=+91XXXXXXXXXX make whatsapp-smoke
 
 set -euo pipefail
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
@@ -26,8 +25,16 @@ source "$SCRIPT_DIR/_lib.sh"
 ensure_compose_running
 
 # --- Configuration -----------------------------------------------------------
-# Default phone is the maintainer's number. Override via SMOKE_TEST_PHONE.
-SMOKE_TEST_PHONE="${SMOKE_TEST_PHONE:-+919605770221}"
+# No default on purpose: this sends a real WhatsApp message.
+if [[ -z "${SMOKE_TEST_PHONE:-}" ]]; then
+  status_fail "SMOKE_TEST_PHONE is not set"
+  echo
+  status_info "Give it YOUR number in international format, e.g."
+  status_info "  SMOKE_TEST_PHONE=+91XXXXXXXXXX make whatsapp-smoke"
+  status_info "The number must have joined your Twilio WhatsApp sandbox."
+  echo
+  exit 2
+fi
 
 header "WhatsApp smoke test"
 

@@ -27,7 +27,7 @@ docker compose exec frontend-customer sh  # customer app
 | Customer app | `localhost:5174/web/` | `localhost:8000/web/` |
 | API docs | — | `localhost:8000/docs` |
 
-Both Vite servers declare a `base`, so bare `localhost:5173` and `localhost:5174` will **not** serve the apps — Vite returns a "configured with a public base URL" message instead. Use the `/app/` and `/web/` paths.
+Both Vite servers declare a `base`, so the apps live under `/app/` and `/web/`. Bare `localhost:5173` and `localhost:5174` redirect there (a 302, checked on 23 November 2026), so either form works in a browser — but other paths, such as `localhost:5173/login`, are not served, and links and scripts should use the prefixed URLs.
 
 Use the proxied URLs when you need the same request path a phone would take. Use the direct ones for normal work — hot reload doesn't survive the proxy, since HMR's WebSocket isn't forwarded.
 
@@ -39,7 +39,7 @@ Use the proxied URLs when you need the same request path a phone would take. Use
 make dev-up
 ```
 
-Brings up Docker, starts ngrok if it isn't running, and checks whether the Content Templates' baked URLs still match the current tunnel — auto-repairing them if not. This is the one command to run after a reboot or a long break.
+Brings up Docker, starts ngrok if it isn't running, and checks whether `PUBLIC_BASE_URL` in `.env` still matches the current tunnel; on a mismatch it runs `make templates-refresh`. This is the one command to run after a reboot or a long break. (What that recovery does and doesn't fix is spelled out under [The ngrok hostname problem](#the-ngrok-hostname-problem) — with a static ngrok domain you never hit it.)
 
 ```bash
 make ps        # container status
@@ -50,11 +50,11 @@ make help      # every available target
 ## Running tests
 
 ```bash
-make test         # Full backend suite with coverage
-make test-fast    # Same suite, stop at first failure
+make test         # Full backend suite, verbose
+make test-fast    # Same suite, stop at the first failure (-x)
 ```
 
-Tests run inside the api container against the `db_test` database on port 5433. Your dev data on port 5432 is untouched. **276 tests as of Phase 3.5.**
+Tests run inside the api container against the `db_test` database on port 5433. Your dev data on port 5432 is untouched. **385 tests, all passing** (run in the Docker stack on 23 November 2026, about 85 seconds). There is no coverage tooling configured.
 
 To run a single test or module:
 
@@ -69,7 +69,9 @@ Tables are truncated between tests by the fixture in `conftest.py`. You should n
 
 ### Tests and real WhatsApp messages
 
-`conftest.py` has an autouse fixture that stubs out `owner_notification_service.notify_new_registration`. Without it, the registration endpoint tests fire **real** WhatsApp messages at the owner's phone — roughly five per suite run, against a sandbox quota of 50/day.
+`conftest.py` has an autouse fixture (`mute_outbound_notifications`) that stubs out `owner_notification_service.notify_new_registration` and `customer_notification_service.notify_approved`. Without it, the registration and approval endpoint tests fire **real** WhatsApp messages at the owner's phone and a customer's, against a sandbox quota of 50/day.
+
+When you run the suite against a `.env` that holds real Twilio credentials and you want certainty that nothing can be sent, override them for the run: `docker compose exec -T -e TWILIO_ACCOUNT_SID=ACdummy -e TWILIO_AUTH_TOKEN=dummy api pytest tests/ -q`.
 
 If you add a code path that sends outbound WhatsApp from a request handler, either mock it in the test or extend that fixture. A test suite that costs money and spams a phone is a test suite people stop running.
 
@@ -132,26 +134,40 @@ make reset-db
 
 Drops, recreates, migrates, and seeds the dev database. Wipes everything. Useful when a destructive schema change has left you somewhere odd, or when you want a known-good state back.
 
-The seed script is `backend/scripts/seed_phase_2.py`. It still only covers through Phase 2 — no seeded conversations, registrations, or tokens. If you need those, create them by hand or via the bot.
+The seed script is `backend/scripts/seed_phase_2.py`. It creates the owner user, customers, categories, products, default-order templates and orders — the Phase 2 data set. It does **not** seed stock tracking (no product is stockable), conversations, registrations or tokens. If you need those, create them from the dashboard, by hand or via the bot.
+
+The owner it creates has a fixed, published password (see the README), so the script refuses to run unless `ENVIRONMENT` is `development`, `dev`, `local` or `test`. A database that isn't seeded gets its first account from `docker compose exec -it api python -m scripts.create_owner --email you@example.com --name "Your Name"`; after that, a superuser adds accounts through `POST /api/v1/auth/register` (see [ADR-28](DECISIONS.md#adr-28--account-creation-is-superuser-only-and-the-first-owner-comes-from-a-script)).
 
 ## Working on the WhatsApp channel
 
 ### The ngrok hostname problem
 
-The free ngrok tier can hand you a different hostname after a restart. When that happens, two things break at once: Twilio's webhook points at a dead host, and any Content Template with a baked-in URL (cart link, owner notification) sends customers to a dead link.
+The free ngrok tier can hand you a different hostname after a restart. When that happens, two things break at once: Twilio's webhook points at a dead host, and any Content Template with a baked-in URL (cart link, invoice link, owner notification) sends customers to a dead link.
 
 ```bash
-make ngrok-check        # is ngrok up, and do templates match the current tunnel?
-make templates-refresh  # re-bootstrap templates against the current PUBLIC_BASE_URL
+make ngrok-check        # read-only: does PUBLIC_BASE_URL in .env match the live ngrok tunnel?
+make templates-refresh  # run the template bootstrap, restart api + worker, re-run the check
 ```
 
-`make dev-up` runs the check automatically and repairs drift.
+Know what these do and don't do — read from the scripts, not exercised against a live Twilio account:
 
-If the hostname changed you also need to update Twilio's webhook URL by hand, in the Console under Messaging → Try it out → Sandbox settings.
+- `make ngrok-check` compares the live tunnel URL with `PUBLIC_BASE_URL` in `.env`. It never looks at the URLs stored on Twilio.
+- `make templates-refresh` runs the bootstrap script, which **skips templates that already exist**, then restarts `api` and `worker` and repeats the check. It does not edit `.env`, does not delete anything on Twilio, and a plain `restart` does not re-read `.env`.
+- `make dev-up` runs the check and, on a mismatch, runs `templates-refresh`.
+
+So after the hostname actually changes, the working sequence is:
+
+1. Put the new hostname in `PUBLIC_BASE_URL` in the root `.env`.
+2. `docker compose up -d --force-recreate api worker`. The bootstrap runs *inside* the api container, which only sees the new `PUBLIC_BASE_URL` after it is recreated (the root `.env` reaches the container as environment variables fixed at creation).
+3. Delete the stale link templates on Twilio (`bakeriq_cart_link`, `bakeriq_registration_link`, `bakeriq_owner_notification`, `bakeriq_invoice_link`) — see the delete snippet below.
+4. `make templates-refresh` to recreate them. The new template IDs are written to `backend/.env`, and the target restarts `api` and `worker`, which re-read that file at startup.
+5. Update Twilio's webhook URL by hand, in the Console under Messaging → Try it out → Sandbox settings.
+
+Claiming a free static ngrok domain (see [`SETUP.md`](SETUP.md#3-authenticate-ngrok)) avoids all of this. VERIFY: the sequence above is reasoned from the scripts and should be confirmed the next time a hostname rotates.
 
 ### Content Templates
 
-Seven templates live on Twilio, created by:
+Nine templates live on Twilio (`bakeriq_greeting`, `_nav`, `_cart_link`, `_fallback`, `_order_confirmation`, `_registration_link`, `_owner_notification`, `_invoice_link`, `_approved`), created by:
 
 ```bash
 docker compose exec api python scripts/bootstrap_content_templates.py
@@ -171,7 +187,7 @@ print(r.status_code)
 "
 ```
 
-Then re-run the bootstrap and recreate the containers so the new SID is picked up.
+Then re-run the bootstrap, which writes the new SID to `backend/.env`, and restart `api` and `worker` so it is read.
 
 **Never rename a button title** without changing the matching constant in `customer_handler`. Twilio delivers the button's title as the inbound message body — a renamed button routes nowhere, silently.
 
@@ -181,7 +197,7 @@ Then re-run the bootstrap and recreate the containers so the new SID is picked u
 make whatsapp-smoke
 ```
 
-Sends one nav template to `SMOKE_TEST_PHONE`, confirming Twilio credentials, template SIDs, and the tunnel are all working. Asks for confirmation first, since it costs quota.
+Sends one nav template to the phone in `SMOKE_TEST_PHONE`, confirming Twilio credentials, template SIDs, and the tunnel are all working. Asks for confirmation first, since it costs quota. **`SMOKE_TEST_PHONE` is required and has no default**: set it to your own number, for example `SMOKE_TEST_PHONE=+91XXXXXXXXXX make whatsapp-smoke`. Without it the script exits before sending anything. (Until 23 November 2026 it defaulted to the original maintainer's own number, which is why that number is still in the git history.) The variable is read by the script only; it is not in `.env.example`.
 
 Watch messages arrive and dispatch:
 
@@ -314,20 +330,23 @@ git config user.email "212041449+scorpiocodex@users.noreply.github.com"
 
 ### Backend
 
-- Black formatting (88-char line limit), enforced by Ruff
-- Ruff for linting; imports sorted by isort (inside Ruff config)
+- Black-style formatting (88-char line limit); Ruff is the formatter and linter in the devcontainer, with isort-style import ordering
 - Type hints on function signatures — return types especially
 - Docstrings on services (not always on simple API handlers)
 
+`black`, `isort`, `ruff` and `mypy` are installed from `requirements.txt`, but there is **no `pyproject.toml`, Ruff or mypy config, and no CI or pre-commit hook** — the conventions are applied by editor format-on-save and by habit, so they are not enforced.
+
+How far the existing code is from them, measured on 23 November 2026 with the versions in the `api` image (ruff 0.17.6, black 24.10.0): `ruff check app tests scripts` reports 262 findings, `black --check` would reformat 10 files, and `isort --check-only` flags more than half of the files. Adding a `make lint` target today would therefore start red, and turning on enforcement means a one-off formatting pass over the codebase first. That pass hasn't been done. New code in the fix commits of that date is black-formatted.
+
 ### Frontend
 
-- Prettier (single quotes, trailing commas, 100-char width)
-- ESLint with the React plugin
+- Prettier (single quotes, trailing commas, 100-char width), set in the devcontainer's VS Code settings
+- ESLint — a config exists for the dashboard (`frontend/eslint.config.js`) but not the customer app, and neither `package.json` has a `lint` script
 - Functional components only
 - Hooks order: state, then derived values, then effects, then handlers, then render
 - One default export per file; named exports for incidental utilities
 
-VS Code with the included `.devcontainer/devcontainer.json` configures both automatically.
+VS Code with the included `.devcontainer/devcontainer.json` applies the formatter settings automatically. Nothing runs them in CI.
 
 ### Pylance and Optional narrowing
 
@@ -345,18 +364,12 @@ Runtime-neutral, and it silences a diagnostic that otherwise trains you to ignor
 
 ### SQLAlchemy session
 
-Services take `db: Session` and call `db.flush()`, not `db.commit()`. The endpoint commits at the end of a successful request. This lets a service compose several operations into one transaction.
+Services take `db: Session` first. Two commit conventions coexist in the code, split roughly by age (checked 23 November 2026):
 
-```python
-def create_order(db: Session, data: OrderCreate) -> Order:
-    order = Order(...)
-    db.add(order)
-    db.flush()  # gets the order ID without committing
-    for item_data in data.items:
-        db.add(OrderItem(order_id=order.id, ...))
-    db.flush()
-    return order
-```
+- **The CRUD services commit themselves.** `category_service`, `customer_service`, `product_service`, `default_order_service` and `order_service` call `db.commit()` (and `db.refresh()`) at the end of each write, and their endpoints don't commit. `owner_notification_service` and `customer_notification_service` also commit, to persist the outbound-message log.
+- **The newer building-block services flush and leave the commit to the caller.** `token_service`, `registration_token_service`, `pending_registration_service`, `conversation_log` and `inventory_service` call `db.flush()` — `web_link_service.issue_link` documents "caller is responsible for `db.commit()`" — and the endpoints that use them (`cart`, `register`, `approvals`, `inventory`, `auth`, `webhooks`) commit. This lets one request compose several operations into a single transaction.
+
+When you add to an existing service, follow that service's convention; for a new building-block service prefer flush-and-let-the-caller-commit. Either way, the order-stock changes in `order_service` run inside the same transaction as the order write, so a failure rolls both back.
 
 **The Celery worker is the exception.** It uses its own `SessionLocal`, not the request-scoped `get_db`. Anything the worker needs to see must be committed *before* the task is enqueued — otherwise the worker queries for a row that isn't visible yet.
 
@@ -377,17 +390,19 @@ db.flush()
 
 ```python
 def deactivate_customer(db: Session, customer_id: UUID) -> Customer:
-    customer = db.get(Customer, customer_id)
-    if not customer:
-        raise NotFoundError(...)
+    """Soft-delete via is_active=False. We never DELETE because of order history FKs."""
+    customer = get_customer(db, customer_id)
+    if not customer.is_active:
+        return customer  # idempotent
     customer.is_active = False
-    db.flush()
+    db.commit()
+    db.refresh(customer)
     return customer
 ```
 
-Reactivation goes through the normal update endpoint with `{"is_active": true}` — there's no separate endpoint.
+Reactivation goes through the normal update endpoint with `{"is_active": true}` — there's no separate endpoint. The one other path is registration: approving a registration for a phone that belongs to a deactivated customer reactivates that customer instead of creating a duplicate.
 
-**When adding an `is_active` check, add it everywhere.** `find_customer_by_phone` filtered on it and the registration endpoint's already-registered check didn't, which left deactivated customers routed to a form that then rejected them — a dead end with no way back in.
+**When adding an `is_active` check, add it everywhere.** `find_customer_by_phone` filtered on it and the registration endpoint's already-registered check didn't, which left deactivated customers routed to a form that then rejected them — a dead end with no way back in. That gap is fixed now, but it is the pattern to watch for.
 
 ### Bot handler contract
 
@@ -446,6 +461,8 @@ export function useApprovalsCount() {
 }
 ```
 
+The inventory page's prep list polls too, every 5 minutes, so a dashboard left open overnight notices the 05:00–21:00 visibility window without a manual reload.
+
 30 seconds is a deliberate middle ground: fast enough that the badge feels responsive, slow enough that an idle dashboard isn't hammering the API all day. React Query also refetches on window focus by default, which covers the common case of the owner tabbing back after reading a WhatsApp notification.
 
 ### Form modals
@@ -468,13 +485,17 @@ Controlled components taking `open`, `onClose`, and optionally a record to edit.
 
 ### `.env` changes need `--force-recreate`
 
-`docker compose restart` keeps the environment the container was created with. A new or changed variable in `.env` won't be visible:
+There are two env files, and they behave differently:
 
-```bash
-docker compose up -d --force-recreate api worker
-```
+- **The root `.env`** reaches the containers through Compose's `env_file`, as environment variables fixed when the container is *created*. `docker compose restart` keeps the old values, so a new or changed variable here (`PUBLIC_BASE_URL`, `OWNER_WHATSAPP_PHONE`, `BUSINESS_*`, …) needs:
 
-This bites hardest after running the template bootstrap, which writes new SIDs into `.env`. Symptom: the config still reads `None` for a variable you can see in the file.
+  ```bash
+  docker compose up -d --force-recreate api worker
+  ```
+
+- **`backend/.env`** (git-ignored; created by the template bootstrap, which writes the `CONTENT_SID_*` values there) is read by the app itself at process start, so a plain `restart` is enough. Checked on 23 November 2026: inside the container the `CONTENT_SID_*` values are not in the environment and `settings` still reads them from this file. A real environment variable wins over the file, so if you also put a `CONTENT_SID_*` in the root `.env`, that copy overrides the bootstrap's.
+
+Symptom of getting this wrong: the config still reads the old value (or `None`) for a variable you can see in the file.
 
 ### Async / await on endpoints
 

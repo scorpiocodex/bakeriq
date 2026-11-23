@@ -4,11 +4,16 @@
 # Read-only. Reports three things:
 #   1. Is ngrok running locally?
 #   2. What hostname is the current tunnel serving?
-#   3. Does that hostname match what's baked into our Content Templates?
+#   3. Does that hostname match PUBLIC_BASE_URL in .env?
+#
+# Step 3 compares against .env only. It never asks Twilio what URL a Content
+# Template actually has baked in, so it can't see a template that is stale
+# while .env is correct. See docs/DEVELOPMENT.md ("The ngrok hostname
+# problem") for the recovery steps.
 #
 # Exit codes:
-#   0 — ngrok healthy AND no drift
-#   2 — ngrok healthy but drifted from .env baked URL (run `make templates-refresh`)
+#   0 — ngrok healthy and its hostname matches PUBLIC_BASE_URL
+#   2 — PUBLIC_BASE_URL is unset or differs from the tunnel hostname
 #   3 — ngrok not running
 #
 # Non-zero exits let callers (scripts/dev-up.sh) react automatically;
@@ -53,9 +58,10 @@ fi
 status_ok "Current tunnel: ${C_BOLD}${current_url}${C_RESET}"
 
 # --- Step 3: does it match the baked URL? -------------------------------------
-# We read PUBLIC_BASE_URL from .env — this is what bootstrap_content_templates.py
-# uses when creating the cart-link template. If they differ, the template's
-# baked-in URL points to a stale hostname and "Open cart" buttons 404.
+# We read PUBLIC_BASE_URL from .env — the value bootstrap_content_templates.py
+# bakes into the templates it creates. If it differs from the live tunnel,
+# templates created earlier probably point at a stale hostname and the
+# "Open cart" button will 404. (We can't confirm that from here; see above.)
 env_file="${SCRIPT_DIR}/../.env"
 if [[ ! -f "$env_file" ]]; then
   status_fail ".env file not found at ${env_file}"
@@ -94,9 +100,10 @@ echo
 status_info "Current:  ${current_url}"
 status_info "Baked:    ${baked_url}"
 echo
-status_info "The cart-link Content Template has the OLD hostname baked in."
-status_info "Tapping 'Open cart' in WhatsApp will hit a 404."
+status_info "Content Templates created under the old hostname still point at it,"
+status_info "so tapping 'Open cart' in WhatsApp will probably hit a 404."
 echo
-status_info "Recover with:  ${C_BOLD}make templates-refresh${C_RESET}"
+status_info "make templates-refresh will NOT replace them (it reuses templates that"
+status_info "already exist). Follow: docs/DEVELOPMENT.md, 'The ngrok hostname problem'."
 echo
 exit 2

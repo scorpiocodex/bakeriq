@@ -182,7 +182,8 @@ def submit_registration(
     On success:
       - Token is marked consumed
       - PendingRegistration row is created with status='awaiting_approval'
-      - Owner will be notified (Change 2 — TODO)
+      - Owner is notified on WhatsApp (best effort: a Twilio failure is
+        logged and never fails the request)
 
     On "already registered" (a Customer exists for this phone):
       - Token is STILL consumed (safe default)

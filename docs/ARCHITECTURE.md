@@ -42,11 +42,11 @@ BakeriQ has two front ends, one API, and an async worker:
 +----------------------+                  +----------------------+
 ```
 
-**Why the API proxies both front ends.** Twilio needs one public URL, and ngrok's free tier gives one tunnel. Routing `/web` and `/app` through FastAPI means a single hostname reaches the API, the customer app, and the dashboard. Each Vite config declares a matching `base` so paths forward verbatim — stripping the prefix instead would break asset URLs. In production nginx does the same routing in front of the built bundles, giving three prefixes: `/api`, `/web`, `/app`.
+**Why the API proxies both front ends.** Twilio needs one public URL, and ngrok's free tier gives one tunnel. Routing `/web` and `/app` through FastAPI means a single hostname reaches the API, the customer app, and the dashboard. Each Vite config declares a matching `base` so paths forward verbatim — stripping the prefix instead would break asset URLs. The API therefore serves three prefixes: `/api`, `/web`, `/app`. A production deployment would put a web server such as nginx in front of the built bundles to do the same routing; that is not built — the `nginx/` folder is an empty placeholder (see [`ROADMAP.md`](ROADMAP.md)).
 
 **Redis** carries three things on separate databases: Celery's broker (DB 1), Celery's result backend (DB 2), and the in-progress cart cache (DB 0). Separate DBs so flushing the queue can't wipe cart state.
 
-**Ollama** runs natively on the host rather than in a container — the model is ~2 GB and would need re-pulling on every rebuild. Containers reach it via the Docker bridge gateway (`172.17.0.1:11434`), which requires `OLLAMA_HOST=0.0.0.0` on the host and a UFW rule if the firewall is up. See [`SETUP.md`](SETUP.md).
+**Ollama** runs natively on the host rather than in a container — the model is ~2 GB and would need re-pulling on every rebuild. How containers reach it depends on the platform. On Linux it is the Docker bridge gateway (`172.17.0.1:11434`), which requires `OLLAMA_HOST=0.0.0.0` on the host and a UFW rule if the firewall is up. On Docker Desktop for Windows (tested) the bridge address is refused and `host.docker.internal:11434` works, with Ollama left on its default loopback binding. See [`SETUP.md`](SETUP.md).
 
 Authentication is JWT, but only for the dashboard. Customer-facing flows have no login — a URL-safe token in the path *is* the credential, scoped to one action. See [The WhatsApp channel](#the-whatsapp-channel).
 
@@ -155,7 +155,7 @@ Note that `.env` changes need `docker compose up -d --force-recreate`, not `rest
 
 ### Tests
 
-`backend/tests/` — pytest. Tests use a separate `db_test` database container (port 5433) so they never touch dev data. **276 tests pass as of Phase 3.5 close.**
+`backend/tests/` — pytest. Tests use a separate `db_test` database container (port 5433) so they never touch dev data. **385 tests pass** (run inside the `api` container, 23 November 2026).
 
 Test conventions:
 
@@ -163,7 +163,7 @@ Test conventions:
 - Each test starts from truncated tables (faster than drop/create, same isolation)
 - Tests are organised by behaviour, not by endpoint shape — `test_snapshot_survives_price_change` rather than `test_get_order_returns_200`
 
-`conftest.py` carries an autouse fixture that stubs out `owner_notification_service.notify_new_registration`. Without it, every suite run fires real WhatsApp messages at the owner's phone and burns roughly five messages of the Twilio sandbox's 50/day quota.
+`conftest.py` carries an autouse fixture (`mute_outbound_notifications`) that stubs out `owner_notification_service.notify_new_registration` and `customer_notification_service.notify_approved`. Without it, every suite run fires real WhatsApp messages at the owner's and a customer's phone and burns Twilio sandbox quota.
 
 ## The WhatsApp channel
 
@@ -209,7 +209,7 @@ Retries cover both Ollama SDK errors and `httpx` connection failures. When they 
 
 `Reply` is a frozen dataclass with a body-XOR-content_sid invariant — an outbound message is unambiguously either plain text or a Content Template, never both. `Reply.text()` and `Reply.template()` are the factories.
 
-Content Templates are how the bot renders tappable buttons instead of "reply MENU to see today's items". Seven live on Twilio, created idempotently by `scripts/bootstrap_content_templates.py`, with their SIDs written into `.env`:
+Content Templates are how the bot renders tappable buttons instead of "reply MENU to see today's items". Nine live on Twilio, created idempotently by `scripts/bootstrap_content_templates.py`, with their SIDs written into `.env`:
 
 | Template | Purpose |
 |---|---|
@@ -217,14 +217,16 @@ Content Templates are how the bot renders tappable buttons instead of "reply MEN
 | `bakeriq_nav` | Mid-conversation prompt, same three buttons |
 | `bakeriq_cart_link` | CTA opening the cart web app |
 | `bakeriq_fallback` | Nothing matched — Menu / New / Status |
-| `bakeriq_order_confirmation` | Itemised total + Status / Menu / New |
+| `bakeriq_order_confirmation` | Itemised total + Status / Invoice / New |
 | `bakeriq_registration_link` | CTA opening the registration webform |
 | `bakeriq_owner_notification` | New-registration alert + CTA to the approvals page |
+| `bakeriq_invoice_link` | CTA opening the customer's invoice page (sent when they tap Invoice) |
+| `bakeriq_approved` | Welcome after the owner approves a registration — New order / Menu |
 
 Two constraints worth knowing before touching them:
 
 - **Button titles are load-bearing.** Twilio delivers the button's *title* as the inbound message body, and `customer_handler` matches on those strings. Renaming a button silently breaks its route.
-- **URLs are baked in at creation time.** Changing `PUBLIC_BASE_URL` — which happens whenever an ngrok free-tier hostname rotates — leaves the cart-link and owner-notification templates pointing at a dead host. `make ngrok-check` detects the drift and `make templates-refresh` fixes it. Editing the URL in the bootstrap script is not enough on its own: the script skips templates that already exist, so the old one has to be deleted on Twilio first.
+- **URLs are baked in at creation time.** Changing `PUBLIC_BASE_URL` — which happens whenever an ngrok free-tier hostname rotates — leaves the cart-link, invoice-link and owner-notification templates pointing at a dead host. `make ngrok-check` detects when `PUBLIC_BASE_URL` in `.env` no longer matches the live tunnel, but it does not inspect Twilio. Neither editing the URL nor `make templates-refresh` replaces an existing template: the bootstrap script skips templates that already exist, so the old one has to be deleted on Twilio first. The full sequence is in [`DEVELOPMENT.md`](DEVELOPMENT.md#the-ngrok-hostname-problem); a static ngrok domain avoids the problem.
 
 `whatsapp_sender` sends each `Reply` and logs every attempt to `conversation_messages`, including failures (with a null `twilio_sid`), so the audit trail records intent as well as delivery. `send_replies` returns `list[str | None]`, letting callers report honestly whether a message actually reached the customer.
 
@@ -232,7 +234,7 @@ Two constraints worth knowing before touching them:
 
 Customers never log in. Two token types, both URL-safe random strings that appear in a URL path:
 
-- **`web_session_tokens`** — cart sessions. Bound to a Customer, 30-minute expiry, consumed when the order is placed. A `kind` column (`new` / `reorder` / `edit`) tells the customer app which flow to render. The token string is the primary key.
+- **`web_session_tokens`** — customer sessions. Bound to a Customer. A `kind` column (`new` / `reorder` / `edit` / `invoice`) tells the customer app which flow to render. Cart kinds expire after 30 minutes and are consumed when the order is placed; `invoice` tokens, which open the invoice page, expire after 24 hours. The token string is the primary key.
 - **`registration_tokens`** — the registration webform. Bound to a *phone* rather than a Customer, since registration happens before a Customer exists. 12-hour expiry, one-shot. Has a separate UUID `id` alongside the token.
 
 They're separate tables rather than one polymorphic one: `web_session_tokens.customer_id` is non-null and load-bearing for the well-tested cart flow, and making it nullable to accommodate registration would risk silent bugs there.
@@ -247,13 +249,43 @@ The owner taps that card's button, lands on `/app/approvals` on their phone, and
 
 Both transitions return 409 if the row is already terminal, so a double-tap on a phone can't create duplicates.
 
+### Inventory and the prep list
+
+Inventory is two small mechanisms, not a module with its own tables (see [ADR-24](DECISIONS.md)).
+
+**Stock on the product.** Only sealed, packaged goods carry stock. Three nullable columns on `products` — `is_stockable`, `stock_quantity`, `low_stock_threshold` — are all it takes. `NULL` means "not tracked", which is deliberately different from "tracked, and zero". Stock is always counted in the product's own unit.
+
+**Deduct at placement, restore on cancel or delete** (`inventory_service`, called from `order_service`):
+
+- Creating an order deducts its stockable items immediately, rather than at delivery, so two customers can't both be promised the last packet.
+- Editing an order's items restores the old lines and deducts the new ones.
+- Moving an order into `cancelled` restores what it held. Drafts never deduct or restore.
+- Hard-deleting an order (`DELETE /orders/{id}`) restores what it held too, unless it was already cancelled (that restored it at cancel time). Until 23 November 2026 deleting left the stock deducted; see ADR-25.
+- Stock is allowed to go **negative**. The count drifts from reality anyway (someone sells a packet over the counter without touching the dashboard), so refusing an order on a possibly-stale zero would be worse than showing the owner a negative to correct. Low stock is a *warning* — `is_low_stock` on the product payload — shown to the customer while they build a cart and to the owner on the Inventory page. It never blocks an order.
+- Non-stockable products, products never counted (`stock_quantity` is `NULL`) and hard-deleted products are skipped rather than erroring.
+
+**The prep list.** Made-to-order items are baked and sold the same day, so there is nothing to count; what the chef needs is how many to make. `GET /api/v1/inventory/prep` derives that at read time — the sum of quantities by product across the day's orders for active, non-stockable products, excluding drafts and cancelled orders. Nothing is stored and no scheduler runs. The list is marked visible between 05:00 and 21:00: orders for a day close at 05:00, and after the baking window it's history.
+
+### Billing and invoices
+
+There are no billing tables. `billing_service` runs aggregate queries over `orders` and `order_items`, which already snapshot product name, price and unit.
+
+Two filters apply to every query: `is_draft = false` (a cart isn't revenue) and `status != cancelled` for totals. Cancelled orders still *appear* on an invoice, greyed out, so the owner can see what was voided, but contribute nothing to the total. Dates use `order_date` (the business date the order is for), not `created_at`, matching `dashboard_service`.
+
+An invoice is **per customer per day**, numbered `INV-YYYYMMDD-<first 8 characters of the customer id>`. The invoice header (business name, address, phone, email) is read from the `BUSINESS_*` environment variables through the `BusinessDetails` schema, so its source can later move to a table without changing the invoice shape.
+
+Two ways in:
+
+- **Owner:** the dashboard's Billing pages call the JWT-authed `/api/v1/billing/*` endpoints (summary, customer list, a customer's invoice dates, one invoice).
+- **Customer:** the order-confirmation card carries an **Invoice** button. Tapping it sends a `bakeriq_invoice_link` card; the link carries an `invoice` token (24-hour expiry) and opens `/web/invoice/{token}`, which calls the unauthenticated, token-authenticated `GET /api/v1/invoice/{token}` and shows the customer's latest invoice.
+
 ## Frontend
 
 There are two React apps.
 
-**`frontend/`** — the owner dashboard. JWT-authed, served under `/app`, the larger of the two.
+**`frontend/`** — the owner dashboard. JWT-authed, served under `/app`, the larger of the two. Pages: Dashboard, Orders, Approvals, Customers, Products, Inventory (a stock table, a "track stock for a product" dialog and the prep list), Billing (plus per-customer and per-invoice pages) and Settings. Settings only manages categories.
 
-**`frontend-customer/`** — the customer-facing app. No auth beyond the path token, served under `/web`, three routes: cart (`/new`, `/reorder`, `/edit`) and registration (`/register`).
+**`frontend-customer/`** — the customer-facing app. No auth beyond the path token, served under `/web`, five routes: cart (`/new`, `/reorder`, `/edit`), registration (`/register`) and invoice (`/invoice`). On a cart page the customer can place the order or save the cart and continue later; the saved cart lives in Redis under the same token, so reopening the link within its 30-minute life resumes it. The `edit` kind and `/edit` route exist in the API and the customer app, but the bot does not currently issue `edit` links — its "modify", "edit", "confirm" and "cancel" keywords fall through to the LLM path.
 
 Both are Vite + React 18 + TanStack Query + Tailwind, and follow the same layering.
 
@@ -286,7 +318,7 @@ The dashboard's Vite `base` is `/app/`, and `BrowserRouter` takes a matching `ba
 
 React Router respects the basename automatically; **raw `window.location` assignments do not**. Three places manipulate location directly (the 401 interceptor in `client.js`, `AuthContext`, and `api/auth.js`) and each hardcodes `/app/login`. Adding a fourth means remembering the prefix.
 
-In dev the dashboard is at `localhost:5173/app/` — bare `localhost:5173` will not serve it.
+In dev the dashboard is at `localhost:5173/app/`; bare `localhost:5173` redirects there, but other unprefixed paths (for example `/login`) return 404.
 
 ### State management
 
@@ -348,6 +380,7 @@ categories
 products
   +- id, name, description, category_id (FK -> categories),
      unit_price, unit_label, aliases, is_available_today,
+     is_stockable, stock_quantity (nullable), low_stock_threshold (nullable),
      is_active, timestamps
 
 default_orders
@@ -373,8 +406,8 @@ conversations
         twilio_sid (nullable), intent (nullable), created_at
 
 web_session_tokens
-  +- token (PK), customer_id (FK), kind, consumed_at,
-     expires_at, created_at
+  +- token (PK), customer_id (FK), kind (new | reorder | edit | invoice),
+     consumed_at, expires_at, created_at
 
 -- Phase 3.5: registration + approval --
 
@@ -405,7 +438,7 @@ received -> preparing -> ready -> delivering   (forward chain)
     +-----------+----------+----------+---> cancelled (terminal)
 ```
 
-The status-transition logic in `order_service.transition_status()`:
+The status-transition logic in `order_service.change_status()`:
 
 - Forward transitions within the chain are allowed
 - Backward transitions are allowed (we may discover an order was advanced too early)
@@ -465,10 +498,12 @@ Status codes carry meaning in the token-based flows, and the customer app render
 Flagged here so you know they're missing by design, not by accident:
 
 - **WebSockets** — the approvals badge polls every 30 seconds instead. Fine for a signal that arrives a few times a day; revisit if live order push lands.
-- **Background scheduler** — Phase 4. For scheduled notifications (chef brief, daily summaries).
-- **Order status notifications** — Phase 4. Outbound WhatsApp when an order moves preparing → ready → delivered. The Content Template infrastructure is already in place.
-- **Inventory module** — Phase 5. Adds `raw_materials`, `recipes`, `stock_movements` tables.
-- **Billing** — Phase 6. Adds receipts, invoices, and export adapters.
+- **Background scheduler** — nothing runs on a schedule. The prep list is derived at read time precisely so it needs none.
+- **Order notifications** — no owner alerts when an order is placed, cancelled or edited, and no status updates to customers as an order moves through the chain. Only registration and approval send WhatsApp messages from a request handler. The Content Template infrastructure is in place for adding them.
+- **Raw-materials inventory** — no `raw_materials`, `recipes` or `stock_movements` tables. Stock lives on the product for sealed goods only (see [Inventory and the prep list](#inventory-and-the-prep-list) and ADR-24).
+- **Receipts and exports** — invoices are viewed on screen; there is no PDF or CSV generation.
+- **Editable business details** — the invoice header comes from `.env`; Settings has no bakery-info section.
+- **Production routing, CI and deployment** — the `/api`, `/web`, `/app` routing is done by the API's development proxy; there is no nginx configuration, CI workflow or hosting setup.
 - **Voice ordering** — dropped. WhatsApp is the only ordering channel.
 
 See [`ROADMAP.md`](ROADMAP.md) for the full plan and rationale.

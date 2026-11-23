@@ -26,6 +26,7 @@ from __future__ import annotations
 import sys
 from decimal import Decimal
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.security import get_password_hash
 from app.models.category import Category
@@ -483,7 +484,24 @@ def _seed_orders(db) -> None:
         db.add(order)
 
 
+DEV_ENVIRONMENTS = {"development", "dev", "local", "test"}
+
+
 def main() -> int:
+    # The admin fixture above has a published password. Refuse to plant it
+    # anywhere that isn't marked as a development environment; a real
+    # deployment creates its owner with `python -m scripts.create_owner`.
+    if settings.ENVIRONMENT.strip().lower() not in DEV_ENVIRONMENTS:
+        print(
+            f"Refusing to seed: ENVIRONMENT is {settings.ENVIRONMENT!r}, not a "
+            "development environment. The seed data includes a fixed admin "
+            "password. Create the owner with `python -m scripts.create_owner` "
+            "instead.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+
     db = SessionLocal()
     try:
         _seed_admin_user(db)

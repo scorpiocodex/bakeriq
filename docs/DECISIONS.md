@@ -153,6 +153,8 @@ For an internship project with 42 days remaining, the time-to-first-message diff
 
 **What could change the answer:** If post-MVP the owner asks "I wish I could see how Veg Puffs are trending over the last month," we add it then with real user feedback rather than guessing.
 
+**Status (November 2026):** Phase 6 shipped as billing only (see [ADR-26](#adr-26--billing-is-aggregate-queries-over-orders-invoices-are-per-customer-per-day)). No analytics were built, and the trigger above never fired.
+
 ## ADR-13 — Single-tenant by design
 
 **Decision:** There is no organisation, tenant, or workspace concept. All data is global within a deployment. Multi-tenancy is not on the roadmap.
@@ -231,7 +233,7 @@ Inverting the rule fixed both. Verified against eight cases covering on-menu, of
 **The two sharp edges:**
 
 1. **Button titles are load-bearing.** Twilio delivers the button's *title* as the inbound message body, and `customer_handler` matches on those strings. Renaming a button silently breaks its route with no error anywhere.
-2. **URLs are baked in at creation time.** A template carrying a link stores the URL as it was when created. When the ngrok free-tier hostname rotates, those templates point at a dead host. Editing the bootstrap script isn't enough — it skips templates that already exist, so the old one must be deleted on Twilio first. `make ngrok-check` detects the drift; `make templates-refresh` repairs it.
+2. **URLs are baked in at creation time.** A template carrying a link stores the URL as it was when created. When the ngrok free-tier hostname rotates, those templates point at a dead host. Editing the bootstrap script isn't enough — it skips templates that already exist, so the old one must be deleted on Twilio first. `make ngrok-check` detects the drift; `make templates-refresh` repairs it. *(Correction, November 2026: reading the scripts, `ngrok-check` compares the tunnel with `PUBLIC_BASE_URL` in `.env`, not with Twilio, and `templates-refresh` reuses existing templates, so it does not by itself replace a stale one. See [`DEVELOPMENT.md`](DEVELOPMENT.md#the-ngrok-hostname-problem) for the working sequence.)*
 
 **Also:** the Twilio Python SDK can send templates but cannot create them. `twilio_content_service` wraps the Content API with raw `httpx` calls for CRUD.
 
@@ -284,6 +286,8 @@ The semantics differ too: cart tokens are customer-bound with a 30-minute expiry
 
 **What could change the answer:** a third token type. Two mirrored tables is fine; four would be a smell worth refactoring.
 
+**Status (November 2026):** invoice links did add a third *kind* of token, but not a third table — they are customer-bound exactly like cart tokens, so they reuse `web_session_tokens` with `kind = 'invoice'` and a 24-hour expiry. See [ADR-27](#adr-27--invoice-links-are-invoice-kind-web-tokens-and-every-failure-is-a-404).
+
 ## ADR-22 — Owner notification is synchronous and best-effort
 
 **Decision:** Submitting the registration form sends the owner's WhatsApp card inline in the request, wrapped in a broad `try/except` that logs and swallows every failure.
@@ -298,6 +302,8 @@ The semantics differ too: cart tokens are customer-bound with a 30-minute expiry
 **Ordering matters:** the notification fires *after* the registration commits. A Twilio exception can't roll back the customer's data.
 
 **If `OWNER_WHATSAPP_PHONE` is unset**, the whole thing is a logged no-op — which keeps local dev quiet without needing a real phone.
+
+**Update (November 2026):** the customer's "you're approved" message (`customer_notification_service.notify_approved`) follows the same pattern: synchronous, best-effort, never raises, sent only after the approval has committed. Rejection deliberately sends nothing — neither the form nor the bot promised a message in that case, and an unprompted "you've been turned down" is worse than the polite decline the bot already gives if they message again.
 
 ## ADR-23 — Both front ends proxied through the API
 
@@ -316,6 +322,78 @@ The semantics differ too: cart tokens are customer-bound with a 30-minute expiry
 - `BrowserRouter` needs a matching `basename`. React Router respects it; raw `window.location` assignments don't, so three files hardcode `/app/login`.
 - Vite dev mode serves every import as a separate request. Through a tunnel with ~250 ms latency, a cold dashboard load is slow. Serving a built bundle would fix it if this becomes painful.
 - Each Vite server needs its docker service name in `allowedHosts`, because the proxy strips the original `Host` header.
+
+**Status (November 2026):** the production routing this decision says it mirrors was never built. `nginx/` is an empty placeholder, so the development proxy is the only `/api`, `/web`, `/app` routing in the repository.
+
+## ADR-24 — Stock lives on the product, for sealed goods only; the prep list is derived
+
+**Context:** the roadmap planned a raw-materials inventory: `raw_materials`, `recipes` (product ↔ ingredient quantities) and `stock_movements` tables, with low-stock alerts on ingredients.
+
+**Decision:** inventory is three nullable columns on `products` (`is_stockable`, `stock_quantity`, `low_stock_threshold`) and no new tables. Only sealed, packaged goods — ladoo packets, bread, biscuits, some cakes — carry stock. Made-to-order items are baked and sold the same day, so their "inventory" is the chef's prep list, computed from the day's orders at read time and never stored.
+
+**Alternatives considered:**
+
+- **The raw-materials design from the roadmap** — planned but not built. Per the author, the internship ended before there was time to finish it. The code records no other reason, so this was a matter of time rather than a considered rejection of the design.
+- **Stock on every product** — "how many are in stock" isn't a meaningful question for items baked and sold the same day; `is_available_today` already covers whether they're being made.
+- **Writing the prep list to the database at 5 AM and clearing it later** — needs a scheduler, cleanup, and a story for when the job doesn't run, all to reproduce a number that is one query away (the reasoning recorded in the `get_prep_list` docstring).
+
+**Why this won:** one migration and no new tables or moving parts. `NULL` stock means "not tracked", which is deliberately distinct from "tracked, and zero". A product is a single selling configuration (a packet of 25 ladoos is its own product row), so stock is counted in that product's own unit and there is no pack-size conversion anywhere.
+
+**What it costs:** no ingredient-level planning or costing, and no purchase/consumption history — a stock count changes by being set directly or by order deduction and restoration, and nothing records why.
+
+**What could change the answer:** needing ingredient-level planning or cost per product. That is the point to build the raw-materials design.
+
+## ADR-25 — Reserve stock at order placement; allow negative; warn, don't block
+
+**Decision:** creating an order deducts stock for its stockable items immediately. Editing an order's items restores the old lines and deducts the new ones; moving an order into `cancelled` restores what it held, and so does deleting an order (unless it was already cancelled, which restored it then). Stock may go negative, and low stock is a warning shown to the customer and the owner — never a reason to refuse an order.
+
+**Alternatives considered:**
+
+- **Deduct at delivery** — without reserving at placement, two customers can each order the last packet in the morning and neither sees a warning.
+- **Refuse the order at zero** — the count drifts from reality anyway (someone sells a packet over the counter without touching the dashboard), so refusing on a possibly-stale zero is worse than showing the owner a negative to correct.
+
+**Why this won:** the customer sees a warning; the owner decides. Products that aren't stockable, products never counted (`NULL`), and hard-deleted products are skipped rather than erroring, because an order routinely mixes both kinds of item and starting from an assumed zero would invent a number the owner never entered. Drafts neither deduct nor restore.
+
+**What it costs:** the stock number can be wrong in either direction, and a negative count is a normal, visible state the owner has to resolve by recounting. One edge is not covered: a manual stock set refuses negative numbers even though orders can produce one.
+
+**Update (23 November 2026):** deleting an order (`DELETE /orders/{id}`) used to leave the stock it held deducted, so every deleted test order or duplicate lowered the count for good. It now restores stock the way a cancel does, and skips an already-cancelled order so the same stock isn't returned twice.
+
+## ADR-26 — Billing is aggregate queries over orders; invoices are per customer per day
+
+**Decision:** there are no billing tables. `billing_service` aggregates `orders` and `order_items`, which already snapshot product name, price and unit at creation. An invoice is one customer's orders for one `order_date`, numbered `INV-YYYYMMDD-<first 8 characters of the customer id>` — derived, not stored.
+
+**Rules that matter:**
+
+- Drafts are excluded everywhere: a cart the customer hasn't placed has a total but isn't revenue.
+- Cancelled orders contribute nothing to totals but still appear on an invoice, greyed out, so the owner can see what was voided.
+- Dates use `order_date` (the business date the order is for), not `created_at`: an order placed at 11 pm for tomorrow belongs on tomorrow's invoice. This matches the dashboard.
+- The invoice header (business name, address, phone, email) comes from the `BUSINESS_*` environment variables through a `BusinessDetails` schema, so its source can move to a table later without changing the invoice shape.
+
+**Why no billing tables:** the order snapshots already hold everything an invoice shows, so a separate store would only duplicate them. Monthly summary invoices, which the original plan included, were not built: per the author, there was no time to finish them before the internship ended. The per-customer billing page and the daily invoice are what shipped.
+
+**What it costs:** an invoice is a view, not a document — editing an order changes what the invoice shows, there is no PDF or CSV, and the bakery details can't be edited from the dashboard.
+
+## ADR-27 — Invoice links are `invoice`-kind web tokens, and every failure is a 404
+
+**Decision:** tapping Invoice in WhatsApp issues a `web_session_tokens` row with `kind = 'invoice'` and a 24-hour expiry (cart kinds keep their 30 minutes). `GET /api/v1/invoice/{token}` returns the customer's **latest** invoice and answers every failure — bad token, expired, wrong kind, no orders — with a 404.
+
+**Why:** a cart is an in-progress action that should expire so abandoned carts clear, whereas an invoice is a document the customer may want to reopen later in the day; 24 hours also bounds how stale "latest invoice" can get, because the invoice is resolved when the link is opened rather than baked into the token. It is still a customer-bound, path-token credential, which is exactly what `web_session_tokens` models, so no new table. One status for every failure stops the status code revealing whether a token ever existed, and distinguishing the failure modes would tell a legitimate customer nothing they could act on beyond "ask the bot again".
+
+**What it costs:** a stale link can't say *why* it failed. The 404 is uniform in status but not quite in message: the endpoint returns "no invoice found — you haven't placed any orders yet" for a valid token whose customer has no orders, so that single case is distinguishable from an unknown token by anyone who holds a valid one. The same threat model as the cart token applies (see ADR-19): the token is the credential, so it is long, random and short-lived, and it exposes one customer's own invoice.
+
+## ADR-28 — Account creation is superuser-only, and the first owner comes from a script
+
+**Context:** `POST /api/v1/auth/register` was written in Phase 1 as an admin operation, but nothing enforced that: it took no credentials. While checking this documentation against a running stack on 23 November 2026, anyone who could reach the API could register an account, log in and read customer data. The dashboard never calls the route (its client function is unused); accounts had always come from the seed script.
+
+**Decision:** the route now requires a logged-in superuser, using the `get_current_active_superuser` dependency that already existed in `core/deps.py` and was used nowhere: **401** without a token, **403** for a signed-in user who isn't a superuser. Accounts it creates are never superusers. Closing the route removes the only way to make a first account on an unseeded database, so `python -m scripts.create_owner` fills that gap (hidden password prompt or an environment variable, never a command-line flag; the API's own email and password rules; it refuses an existing email). Because the seed script plants a fixed, published admin password, it now also refuses to run unless `ENVIRONMENT` is a development value.
+
+**Alternatives considered:**
+
+- **Remove the route** — the smallest change, but then a second staff account needs direct database access, and the route count and schema change.
+- **Let the first registration become the owner** — a fresh deployment would belong to whoever reached it first. A command-line step has no such window.
+- **A real role model** — nothing in the project needs more than "can create accounts" versus "can't", so `is_superuser` is enough.
+
+**What it costs:** there is no dashboard screen for adding an account — a superuser does it through the API (Swagger's Authorize button works) or the script. Superuser gates account creation and nothing else: every active user can still use every dashboard endpoint, so any account is effectively staff-level. `create_owner` and the seed's environment guard are covered by tests and by running them, but the guard only protects a deployment that sets `ENVIRONMENT` to something other than a development value.
 
 ---
 

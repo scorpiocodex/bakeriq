@@ -4,12 +4,16 @@
 # Three things happen, in order:
 #   1. Docker compose stack up (idempotent — already-up services aren't restarted)
 #   2. ngrok started if not already running (idempotent — checks pgrep first)
-#   3. Template URL drift check — if the cart-link template has the wrong
-#      hostname baked in, automatically triggers templates-refresh
+#   3. Hostname check — compares the live tunnel with PUBLIC_BASE_URL in .env
+#      and, on a mismatch, runs templates-refresh
 #
-# The auto-recover for step 3 is the main reason this script exists. Without
-# it, ngrok hostname rotation silently breaks the WhatsApp "Open cart" button
-# until you notice and manually fix.
+# Be aware of what step 3 can and can't do. templates-refresh creates the
+# templates that are missing and reuses the ones that exist, so it fixes a
+# first-time setup (PUBLIC_BASE_URL unset, nothing created yet) but NOT a
+# template whose baked-in URL went stale after the ngrok hostname rotated.
+# In that case the verification fails and this script says so; follow
+# docs/DEVELOPMENT.md ("The ngrok hostname problem"). A static ngrok domain
+# avoids the problem entirely.
 #
 # Run after a fresh machine boot, after `make dev-down`, or any time you
 # want to bring everything back to a known-good state.
@@ -62,14 +66,14 @@ else
   fi
 fi
 
-# --- Step 3: detect-and-recover for template URL drift -----------------------
-# ngrok-check.sh exits 0 if templates match the current tunnel, 2 if
-# they're drifted (the cart-link template has an old hostname baked
-# in), 3 if ngrok isn't reachable. We already handled 3 above.
+# --- Step 3: check the tunnel hostname against PUBLIC_BASE_URL ----------------
+# ngrok-check.sh exits 0 if the tunnel hostname equals PUBLIC_BASE_URL in
+# .env, 2 if PUBLIC_BASE_URL is unset or differs, 3 if ngrok isn't
+# reachable. We already handled 3 above.
 #
-# On drift (exit 2), automatically run templates-refresh. This is the
-# "auto-recovery" behavior — without it, ngrok rotation silently breaks
-# the bot until someone notices.
+# On exit 2, run templates-refresh. That succeeds when the cause was "never
+# bootstrapped"; when the hostname simply rotated it can't repair existing
+# templates, so the verification at the end fails and we report it.
 echo
 status_running "Checking template URL alignment"
 
@@ -80,18 +84,19 @@ set -e
 
 case $check_status in
   0)
-    status_ok "Templates aligned with current tunnel"
+    status_ok "PUBLIC_BASE_URL matches the current tunnel"
     ;;
   2)
-    status_fail "Template URL drift detected"
+    status_fail "PUBLIC_BASE_URL is unset or doesn't match the tunnel"
     echo
-    status_info "Auto-recovering with templates-refresh..."
+    status_info "Running templates-refresh (creates missing templates only)..."
     echo
     if bash "$SCRIPT_DIR/templates-refresh.sh"; then
-      status_ok "Auto-recovery succeeded"
+      status_ok "templates-refresh succeeded"
     else
-      status_fail "Auto-recovery failed — manual intervention needed"
-      status_info "See:  ${C_BOLD}make ngrok-check${C_RESET} for details"
+      status_fail "Still not aligned — manual steps needed"
+      status_info "See:  ${C_BOLD}make ngrok-check${C_RESET} for details, and"
+      status_info "docs/DEVELOPMENT.md, 'The ngrok hostname problem'"
       exit 1
     fi
     ;;

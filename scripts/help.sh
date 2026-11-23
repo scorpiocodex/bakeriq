@@ -25,7 +25,7 @@ print_target() {
 }
 
 print_group "Dev stack"
-print_target "dev-up"            "Start everything (docker + ngrok) with auto-recovery"
+print_target "dev-up"            "Start everything (docker + ngrok) and check the tunnel hostname"
 echo
 
 print_group "Database"
