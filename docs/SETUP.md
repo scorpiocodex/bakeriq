@@ -6,6 +6,8 @@ It's written for someone who's never touched the project before. If you've done 
 
 Expect **60-90 minutes** end-to-end on your first pass, most of that waiting for Docker builds and the Ollama model download.
 
+> **What has been verified.** The original instructions were written on Debian Linux. On 23 November 2026 two parts were re-run on Windows 11 with Docker Desktop: the Docker part (steps 1 and 4: build, migrate, seed, log in, run the 385-test suite) and Ollama host-reach (a container calling an Ollama server running on the Windows host, including a real call to the order parser). The Twilio and ngrok steps (3 and 5–8) were **not** re-run. Step 2d (pulling the model) wasn't either: the pinned `llama3.2:3b` wasn't installed on that machine, so the parser check used `llama3.2:1b-instruct-q4_K_M`. The Linux-only host steps (2a–2c) don't apply on Windows and weren't tried there. macOS is untested.
+
 ---
 
 ## What you'll end up with
@@ -13,21 +15,21 @@ Expect **60-90 minutes** end-to-end on your first pass, most of that waiting for
 - Docker Compose stack running seven containers (API, worker, two Postgres databases, Redis, two frontend dev servers)
 - An Ollama LLM running on your host machine
 - An ngrok tunnel exposing your local API to the public internet so Twilio can reach it
-- WhatsApp Content Templates registered on your Twilio account
-- The bakery dashboard at `http://localhost:5173`
+- Nine WhatsApp Content Templates registered on your Twilio account
+- The bakery dashboard at `http://localhost:5173/app/` and the customer web app at `http://localhost:5174/web/`
 - A working WhatsApp bot: send "hi" from your phone, get a greeting card with three tappable buttons back
 
 ---
 
 ## Prerequisites
 
-**Operating system:** Debian 13, Ubuntu 22.04+, or another modern Linux. macOS should also work but hasn't been tested — a few of the host-side steps (systemd override for Ollama, UFW rules) are Linux-specific. Windows users should run under WSL2.
+**Operating system:** Debian 13, Ubuntu 22.04+, or another modern Linux. Windows 11 with Docker Desktop was used for the November 2026 verification (commands run from Git Bash); WSL2 is the other option there. macOS should also work but hasn't been tested. A few of the host-side steps (systemd override for Ollama, UFW rules) are Linux-specific, and Docker Desktop needs a different Ollama address — see the start of [step 2](#2-host-side-one-time-configuration).
 
 **Required software** (install these first if you don't have them):
 
 - **Docker Engine + Docker Compose v2.** `docker --version` should print 24+ and `docker compose version` should print v2.20+.
 - **Python 3.11+** on the host — only used for one setup helper (`secrets.token_urlsafe`); not the runtime.
-- **Ollama.** [Install from ollama.com](https://ollama.com/download/linux). We deliberately run Ollama on the host, not in Docker — the 2GB model would need re-downloading on every `docker compose up`, and Ollama's install ships with its own systemd unit that plays well with GPU access.
+- **Ollama.** [Install from ollama.com](https://ollama.com/download) (Linux, macOS and Windows installers). We deliberately run Ollama on the host, not in Docker — the 2GB model would need re-downloading on every `docker compose up`, and Ollama's install ships with its own systemd unit that plays well with GPU access.
 - **`make`.** Standard on every Linux distro; verify with `make --version`.
 - **`ngrok`.** [Install from ngrok.com](https://ngrok.com/download). Free tier is fine.
 
@@ -41,12 +43,12 @@ Expect **60-90 minutes** end-to-end on your first pass, most of that waiting for
 ## 1. Clone and configure `.env`
 
 ```bash
-git clone git@github.com:scorpiocodex/bakeriq.git
+git clone https://github.com/scorpiocodex/bakeriq.git
 cd bakeriq
 cp .env.example .env
 ```
 
-Now edit `.env`. Most values work out of the box; five need real values:
+Now edit `.env`. Most values work out of the box; these need your own:
 
 **`SECRET_KEY`** — JWT signing secret. Generate one:
 
@@ -62,11 +64,30 @@ Paste the output as the value.
 
 **`PUBLIC_BASE_URL`** — leave as `http://localhost:8000` for now. We'll update it after starting ngrok in step 5.
 
+**Business details (optional).** `BUSINESS_NAME`, `BUSINESS_ADDRESS_LINE_1`, `BUSINESS_ADDRESS_LINE_2`, `BUSINESS_CITY`, `BUSINESS_STATE`, `BUSINESS_PINCODE`, `BUSINESS_PHONE` and `BUSINESS_EMAIL` are printed in the header of every invoice. There is no Settings screen for them, so `.env` is the only place to set them. The defaults leave everything except the name blank.
+
+**Other settings to review.** `.env.example` includes these; check each before you start:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `OLLAMA_BASE_URL` | `http://172.17.0.1:11434` | Where containers find Ollama. The default is right for Linux. **On Docker Desktop (Windows, macOS) set `http://host.docker.internal:11434`** — see the start of step 2 |
+| `OWNER_WHATSAPP_PHONE` | unset (commented out) | The owner's WhatsApp number in international format with the leading `+`, for example `+91XXXXXXXXXX` (a `whatsapp:` prefix is optional; the `whatsapp:` scheme is added when sending). Uncomment it to get the "new registration" alert; without it the alert is skipped with a logged warning. The number must have joined the Twilio sandbox (step 7) to receive it |
+| `CUSTOMER_WEB_BASE_URL` | `http://localhost:5174/web` | Base for the plain-text customer links the bot builds: the bot appends `/<kind>/<token>` to it. The customer app is served under `/web/`, which is why the base ends in `/web` (before 23 November 2026 the default lacked it and every such link returned 404). A phone can't reach `localhost`, so for real use set it to `https://<your-ngrok-domain>/web`. The tappable Content Template buttons don't use this setting; they use `PUBLIC_BASE_URL` |
+| `CONTENT_SID_*` (nine of them) | unset | Twilio template IDs. **Don't set these by hand** — the bootstrap script in step 6 writes them to `backend/.env` (a second, git-ignored file, created if missing; the app reads it at startup in addition to the root `.env`) |
+
 ---
 
 ## 2. Host-side one-time configuration
 
 These are host-machine changes that live outside the repo. You do them once per dev machine. Skip any step whose target file already exists with the right content.
+
+> **Docker Desktop on Windows or macOS: skip 2a, 2b and 2c.** They fix Linux-only problems (systemd-resolved DNS, the systemd override for Ollama, UFW). What you need instead:
+>
+> 1. Install Ollama from [ollama.com/download](https://ollama.com/download) and make sure it is running (the app, or `ollama serve`). Leave it on its default `127.0.0.1:11434` binding.
+> 2. In `.env` set `OLLAMA_BASE_URL=http://host.docker.internal:11434`, then recreate the containers so they pick it up: `docker compose up -d --force-recreate api worker`.
+> 3. Pull the model (step 2d).
+>
+> Tested on Windows 11 with Docker Desktop (23 November 2026): from both the `api` and `worker` containers, `http://172.17.0.1:11434` was **refused** (that address is the Docker bridge inside Docker Desktop's Linux VM, not your PC), while `http://host.docker.internal:11434` answered with Ollama still bound to `127.0.0.1`. Check it yourself: `docker compose exec api curl -sS --max-time 5 http://host.docker.internal:11434/api/version`. macOS is untested; it also provides `host.docker.internal`.
 
 ### 2a. Docker DNS
 
@@ -192,6 +213,8 @@ Visit `http://localhost:5173` and log in with:
 - Email: `owner@bakeriq.com`
 - Password: `bakeriqowner`
 
+That account exists only because `make reset-db` seeded it (the seed refuses to run unless `ENVIRONMENT` is a development value). On a database you haven't seeded, create the first account with `docker compose exec -it api python -m scripts.create_owner --email you@example.com --name "Your Name"`; it asks for a password and makes a superuser. Only a superuser can create further accounts (`POST /api/v1/auth/register`).
+
 You should see the dashboard with today's overview cards and seeded orders.
 
 ---
@@ -217,31 +240,45 @@ Also configure Twilio to send incoming WhatsApp messages to this URL. In the [Tw
 3. Method: `POST`
 4. Save
 
-Restart api and worker so they pick up the new `PUBLIC_BASE_URL`:
+Recreate api and worker so they pick up the new `PUBLIC_BASE_URL`. The root `.env` reaches the containers as environment variables fixed when they are created, so a plain `restart` would keep the old value:
 
 ```bash
-docker compose restart api worker
+docker compose up -d --force-recreate api worker
 ```
 
 ---
 
 ## 6. Bootstrap WhatsApp Content Templates
 
-BakeriQ uses four Twilio Content Templates for interactive button UX (greeting card, mid-conversation nav, cart-link CTA, fallback with menu). These live on the Twilio side and are referenced by SID from `.env`. A helper script creates them idempotently:
+BakeriQ uses nine Twilio Content Templates for its interactive button UX. These live on the Twilio side and are referenced by SID from `.env`. A helper script creates them idempotently:
 
 ```bash
 docker compose exec api python scripts/bootstrap_content_templates.py
 ```
 
-This creates four templates on your Twilio account, writes the resulting `CONTENT_SID_*` values to `.env`, and prints what it did. Safe to re-run — existing templates aren't recreated, only missing ones.
+| Template | Kind | Buttons |
+|---|---|---|
+| `bakeriq_greeting` | quick reply | Reorder last · New order · Order status |
+| `bakeriq_nav` | quick reply | Reorder last · New order · Order status |
+| `bakeriq_fallback` | quick reply | Menu · New order · Order status |
+| `bakeriq_order_confirmation` | quick reply | Order status · Invoice · New order |
+| `bakeriq_approved` | quick reply | New order · Menu |
+| `bakeriq_cart_link` | call to action | Open cart |
+| `bakeriq_registration_link` | call to action | Register now |
+| `bakeriq_owner_notification` | call to action | Open dashboard |
+| `bakeriq_invoice_link` | call to action | View invoice |
 
-Restart api and worker so pydantic-settings re-reads `.env`:
+The four call-to-action templates bake `PUBLIC_BASE_URL` into their button URLs. The script creates whichever of the nine are missing on your Twilio account, writes the resulting `CONTENT_SID_*` values to `backend/.env` (not the root `.env`), and prints what it did. Safe to re-run — existing templates aren't recreated.
+
+The script exits with an error when `PUBLIC_BASE_URL` isn't an `http(s)` URL or points at `localhost` / `127.0.0.1`, because a template that points there would send customers to a dead link. Do step 5 first.
+
+Restart api and worker so the new `CONTENT_SID_*` values are read at startup:
 
 ```bash
 docker compose restart api worker
 ```
 
-**Shortcut:** you can also do steps 5 + 6 together with `make dev-up`, which starts ngrok if it isn't running and auto-refreshes templates if the ngrok hostname has drifted from what's baked in `.env`.
+**Shortcut:** `make dev-up` starts ngrok if it isn't running and checks that `PUBLIC_BASE_URL` in `.env` matches the live tunnel, running `make templates-refresh` if it doesn't. It does not edit `.env` for you, so on a first run you still do the `PUBLIC_BASE_URL` edit in step 5 yourself.
 
 ---
 
@@ -267,7 +304,7 @@ The smoke helper sends one WhatsApp message to a configured phone to verify Twil
 SMOKE_TEST_PHONE=+91XXXXXXXXXX make whatsapp-smoke
 ```
 
-Replace `+91XXXXXXXXXX` with the phone that joined the sandbox in step 7. The script asks for confirmation (costs 1 message of your daily 50), then sends the nav-card template. Within 5 seconds you should see on your phone:
+Replace `+91XXXXXXXXXX` with the phone that joined the sandbox in step 7. `SMOKE_TEST_PHONE` is required: the script has no default and exits before sending anything if it is unset. The script asks for confirmation (costs 1 message of your daily 50), then sends the nav-card template. Within 5 seconds you should see on your phone:
 
 > **What would you like to do next?**
 > [Reorder last] [New order] [Order status]
@@ -284,7 +321,13 @@ If the message arrives with three tappable buttons and the buttons work, **Baker
 
 Symptom: worker logs show `httpx.ConnectError`, `httpx.ConnectTimeout`, or `Failed to resolve host` when trying to call the LLM.
 
-Check in order:
+**On Docker Desktop (Windows, macOS)** the checks are different:
+
+1. Is Ollama running? `ollama list` should print your models (if it says it can't connect, start the app or `ollama serve`).
+2. Which address is the app using? `docker compose exec api python -c "from app.core.config import settings; print(settings.OLLAMA_BASE_URL)"`. If it prints `http://172.17.0.1:11434`, that is the problem: the address is refused on Docker Desktop. Set `OLLAMA_BASE_URL=http://host.docker.internal:11434` in `.env` and run `docker compose up -d --force-recreate api worker` (a plain restart keeps the old value).
+3. Can the container reach it? `docker compose exec api curl -sS --max-time 5 http://host.docker.internal:11434/api/version` should print a version JSON.
+
+**On Linux**, check in order:
 
 1. Is Ollama running? `sudo systemctl status ollama` — should be active.
 2. Is it on all interfaces? `sudo ss -tlnp | grep 11434` — must show `*:11434` or `0.0.0.0:11434`, not `127.0.0.1:11434`. If wrong, re-do step 2b.
@@ -301,19 +344,19 @@ Usually means the ngrok hostname changed and Twilio is now pointing at a dead tu
 make ngrok-check
 ```
 
-If it reports drift, update Twilio's webhook URL to the new hostname (step 5). If ngrok isn't running at all, `make dev-up` starts it and auto-recovers.
+If it reports drift, update `PUBLIC_BASE_URL` and Twilio's webhook URL to the new hostname (step 5), then follow the sequence in [DEVELOPMENT.md](DEVELOPMENT.md#the-ngrok-hostname-problem) to replace the stale templates. If ngrok isn't running at all, `make dev-up` starts it.
 
 ### "Open cart" button leads to a 404
 
 Symptom: WhatsApp cart-link buttons open the browser but hit a "Link no longer valid" page or 404.
 
-The cart-link Content Template has a baked-in URL that's now stale. Fix:
+The cart-link Content Template has a baked-in URL that's now stale. The same goes for the registration-link, owner-notification and invoice-link templates, which also carry `PUBLIC_BASE_URL`. Fix:
 
 ```bash
 make templates-refresh
 ```
 
-This re-runs the bootstrap script, which recreates the cart-link template with the current `PUBLIC_BASE_URL`.
+`make templates-refresh` only creates templates that are **missing**, so a stale one must first be deleted on Twilio. The full sequence — update `.env`, recreate the containers, delete the stale link templates, then refresh — is in [DEVELOPMENT.md](DEVELOPMENT.md#the-ngrok-hostname-problem). Claiming a static ngrok domain (step 3) prevents the problem.
 
 ### Twilio quota exceeded (code 63038)
 
@@ -356,7 +399,7 @@ The VS Code Dev Containers extension may cache the old network name. Solution: r
 Once setup is complete, the day-to-day is short:
 
 ```bash
-make dev-up    # brings docker + ngrok up; auto-recovers template URLs if ngrok rotated
+make dev-up    # brings docker + ngrok up and checks PUBLIC_BASE_URL against the live tunnel
 make test      # runs the full test suite
 make logs      # tails api logs
 make help      # lists all available commands
