@@ -29,7 +29,7 @@ pytest==8.3.3
 
 # Dev tooling
 isort==5.13.2
-black==24.10.0
+black==26.10.1
 ruff
 mypy==1.13.0
 watchdog[watchmedo]==5.0.3
