@@ -11,6 +11,8 @@ The source code in this repository is released under the [MIT License](LICENSE),
 
 ## Reserved items
 
+The [LICENSE](LICENSE) file is the plain, unmodified MIT text so that tools and people recognise it. The "Software" it grants rights to does not include the items listed here.
+
 The following are **not** covered by the MIT License. They remain **© 2026 San Shibu. All rights reserved.** You may read them as part of this public repository, but you may not copy, reuse, redistribute, modify or build on them without written permission from the author.
 
 *Proposed entries (draft):*
