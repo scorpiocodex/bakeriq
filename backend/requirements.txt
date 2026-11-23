@@ -13,8 +13,8 @@ email-validator==2.2.0
 
 # Security / auth
 bcrypt==4.2.0
-python-jose[cryptography]==3.3.0
-python-multipart==0.0.12
+python-jose[cryptography]==3.5.0
+python-multipart==0.0.34
 
 # External services
 twilio==9.3.7
@@ -25,11 +25,11 @@ ollama==0.4.4
 httpx==0.27.2
 
 # Testing
-pytest==8.3.3
+pytest==9.2.0
 
 # Dev tooling
 isort==5.13.2
-black==24.10.0
+black==26.10.1
 ruff
 mypy==1.13.0
 watchdog[watchmedo]==5.0.3
