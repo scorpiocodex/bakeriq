@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.deps import get_current_user
+from app.core.deps import get_current_active_superuser, get_current_user
 from app.core.security import (
     create_access_token,
     get_password_hash,
@@ -19,7 +19,19 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-def register(payload: UserCreate, db: Session = Depends(get_db)) -> User:
+def register(
+    payload: UserCreate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_active_superuser),
+) -> User:
+    """Create a dashboard account. Superuser only.
+
+    This used to be open to anyone who could reach the API, which meant
+    anyone could register, log in and read customer data. Now a logged-in
+    superuser (the seeded owner) must make the call: 401 without a token,
+    403 for a normal user. The first account is created out of band with
+    `python -m scripts.create_owner`.
+    """
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing is not None:
         raise HTTPException(
