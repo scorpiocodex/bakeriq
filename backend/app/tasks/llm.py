@@ -66,6 +66,10 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
+# Deliberately `httpx`, not `httpx2`. The exceptions in RETRY_EXCEPTIONS are the ones the
+# Ollama SDK raises, and the SDK uses httpx internally (ollama 0.4.4 requires httpx<0.28).
+# An httpx2 exception class would never match them. tests/tasks/test_llm_retry_exceptions.py
+# provokes a real refused connection to prove the tuple still catches what the SDK raises.
 import httpx
 from celery.exceptions import MaxRetriesExceededError
 from ollama import RequestError, ResponseError

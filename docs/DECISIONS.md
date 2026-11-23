@@ -416,7 +416,17 @@ The semantics differ too: cart tokens are customer-bound with a 30-minute expiry
 
 **What was checked:** the full suite (395 passed, one warning) and, because the test client is not the real server, the new image under real uvicorn against the dev database: login through the form parser, 401 and 422 responses, CORS preflight, the unsigned-webhook guard (403) and both dev proxies. The OpenAPI schema has the same 50 operations and 62 schemas; the only differences are five generated fields (for example `format: password` on the login form and `input`/`ctx` on validation errors).
 
-**What it costs:** a large jump across Starlette's 1.0 line, so the next upgrade deserves the same smoke test. Starlette's `TestClient` now prefers `httpx2` and warns when used with `httpx`; that is the one remaining test warning, and `httpx` still works, so it was left alone. FastAPI now also depends on `opentelemetry-api`, which appears in the image.
+**What it costs:** a large jump across Starlette's 1.0 line, so the next upgrade deserves the same smoke test. Starlette's `TestClient` now prefers `httpx2` and warns when used with `httpx`; that was the one remaining test warning, resolved by [ADR-31](#adr-31--our-own-http-calls-use-httpx2-the-ollama-sdk-keeps-httpx). FastAPI now also depends on `opentelemetry-api`, which appears in the image.
+
+## ADR-31 — Our own HTTP calls use httpx2; the Ollama SDK keeps httpx
+
+**Context:** Starlette 1.x's test client deprecated `httpx` in favour of `httpx2` (the Pydantic team's successor, BSD-3, first released in May 2026) and warns whenever it is used with `httpx`. Two places in the app make their own HTTP calls: the dev reverse proxy and the Twilio Content API client. The Ollama SDK also uses `httpx`, and version 0.4.4 requires `httpx<0.28`.
+
+**Decision:** both of the app's own clients moved to `httpx2` (`httpx2==2.16.2` added to `requirements.txt`). `httpx` stays pinned at 0.27.2 **only** because the Ollama SDK needs it. That has one consequence worth guarding: `tasks/llm.py` lists `httpx.ConnectError`, `ConnectTimeout` and `ReadTimeout` as retryable, and those are the exceptions the SDK raises. An `httpx2` class would never match them, so renaming that one import would silently turn off retries for failed LLM calls and no existing test would notice. It keeps `import httpx`, with a comment saying why.
+
+**What was checked:** 22 new tests. The Twilio Content client, which had none, is covered through `httpx2.MockTransport` (payloads, basic auth, pagination, error handling, idempotent delete). The proxy is covered the same way (path and query forwarded, `Host` replaced, hop-by-hop headers stripped, redirects not followed). A test provokes a real refused connection through the Ollama SDK and asserts the exception is retried; renaming the import to `httpx2` makes it fail. Beyond the tests: a read-only listing of the real Twilio templates over TLS worked through the new client, and the same 13 requests sent to the old and new proxy against the real dev servers returned identical status codes and body hashes.
+
+**What it costs:** two HTTP client libraries are installed until the Ollama SDK moves off `httpx<0.28`. The full suite now runs with no warnings.
 
 ---
 
