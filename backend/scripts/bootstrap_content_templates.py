@@ -1,17 +1,24 @@
 """Bootstrap script — creates BakeriQ's WhatsApp Content Templates.
 
-Idempotent: detects existing templates by friendly_name and reuses their
-SIDs rather than creating duplicates. Writes/updates these lines in .env:
+Idempotent: lists the templates already on the Twilio account, reuses the
+SID of any whose friendly_name matches, and creates only the missing ones.
+It does not compare an existing template's content, so a template that
+already exists is reused as-is, even if its baked-in URL is out of date
+(see the NOTE below).
 
-    CONTENT_SID_GREETING=HX...
-    CONTENT_SID_NAV=HX...
-    CONTENT_SID_CART_LINK=HX...
-    CONTENT_SID_FALLBACK=HX...
-    CONTENT_SID_ORDER_CONFIRMATION=HX...
+It writes one CONTENT_SID_* line per template, nine in all, to the
+git-ignored backend/.env (this script's parent folder, /app/.env inside the
+container). That is a different file from the root .env that docker compose
+loads:
+
+    CONTENT_SID_GREETING            CONTENT_SID_REGISTRATION_LINK
+    CONTENT_SID_NAV                 CONTENT_SID_OWNER_NOTIFICATION
+    CONTENT_SID_CART_LINK           CONTENT_SID_INVOICE_LINK
+    CONTENT_SID_FALLBACK            CONTENT_SID_APPROVED
+    CONTENT_SID_ORDER_CONFIRMATION
 
 After running this, restart api + worker so pydantic-settings re-reads
-the new .env values, and confirm the five CONTENT_SID_* fields are
-declared in backend/app/core/config.py.
+backend/.env. The nine fields are declared in backend/app/core/config.py.
 
 Usage:
     docker compose exec api python scripts/bootstrap_content_templates.py
@@ -371,7 +378,7 @@ def main() -> int:
     print("Next:")
     print("  1. Restart api + worker so pydantic-settings re-reads .env:")
     print("       docker compose restart api worker")
-    print("  2. Confirm the five CONTENT_SID_* fields are declared in")
+    print("  2. The nine CONTENT_SID_* fields are declared in")
     print("     backend/app/core/config.py.")
     return 0
 
