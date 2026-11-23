@@ -4,7 +4,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import bcrypt
-from jose import jwt, JWTError
+import jwt
+from jwt import PyJWTError
 
 from app.core.config import settings
 
@@ -61,5 +62,5 @@ def decode_token(token: str) -> dict | None:
     """Verify signature and return claims, or None if invalid/expired."""
     try:
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-    except JWTError:
+    except PyJWTError:
         return None

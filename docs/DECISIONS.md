@@ -395,6 +395,19 @@ The semantics differ too: cart tokens are customer-bound with a 30-minute expiry
 
 **What it costs:** there is no dashboard screen for adding an account — a superuser does it through the API (Swagger's Authorize button works) or the script. Superuser gates account creation and nothing else: every active user can still use every dashboard endpoint, so any account is effectively staff-level. `create_owner` and the seed's environment guard are covered by tests and by running them, but the guard only protects a deployment that sets `ENVIRONMENT` to something other than a development value.
 
+## ADR-29 — JWTs use PyJWT, not python-jose
+
+**Context:** Phase 1 signed dashboard tokens with `python-jose`. On 23 November 2026 GitHub's advisory database listed several advisories against it, two fixed in 3.4.0 and one — an algorithm-confusion guard bypassed by a DER-encoded public key — that affects every release up to 3.5.0, the latest, with no patched version. The app was not exposed (tokens use a shared secret with HS256, and `jwt.decode` is always called with an explicit `algorithms` list), but that leaves a critical alert open with no way for an upgrade to close it.
+
+**Decision:** replace it with PyJWT (pinned to 2.15.1). Only `app/core/security.py` imports a JWT library, so the change is the import, the exception type caught (`PyJWTError`) and the pin. Tokens are still HS256 with the same claims (`sub`, `iat`, `exp`), so tokens issued before the swap stay valid and nobody is logged out on deploy; a test builds such a token with only the standard library to prove it. Nothing else used `cryptography`, so it, `ecdsa`, `rsa` and `pyasn1` are no longer installed.
+
+**Alternatives considered:**
+
+- **Stay on python-jose 3.5.0 and dismiss the alert** — defensible because of the reasons above, but it keeps a library with an unfixable critical advisory in the dependency tree.
+- **Authlib** — covers more than this app needs (OAuth/OIDC) for a single encode and decode call.
+
+**What it costs:** PyJWT publishes security fixes too, so the pin needs to keep moving (Dependabot watches it). PyJWT is stricter in one way that matters here: it rejects a token whose `sub` is not a string (`InvalidSubjectError`); the app already sends `str(subject)`, and a test covers the other refusals (expired, tampered, wrong key, `alg: none`, a different HMAC algorithm).
+
 ---
 
 ## Adding new decisions

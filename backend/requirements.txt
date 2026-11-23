@@ -13,7 +13,7 @@ email-validator==2.2.0
 
 # Security / auth
 bcrypt==4.2.0
-python-jose[cryptography]==3.5.0
+PyJWT==2.15.1
 python-multipart==0.0.34
 
 # External services

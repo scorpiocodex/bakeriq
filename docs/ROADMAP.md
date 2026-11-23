@@ -31,7 +31,7 @@ Built and shipped:
 
 - Project scaffold (FastAPI app structure, React app via Vite, Docker Compose for the full stack)
 - Docker images for backend and frontend with non-root users and bind-mounted code for hot reload
-- User model + JWT-based authentication (bcrypt password hashing, python-jose for JWT)
+- User model + JWT-based authentication (bcrypt password hashing; python-jose for JWT at the time, replaced by PyJWT in November 2026, see ADR-29)
 - Login page and protected route wrapper on the frontend
 - Basic dashboard placeholder
 
