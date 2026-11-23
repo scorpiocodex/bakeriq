@@ -35,7 +35,9 @@ class OwnerExistsError(Exception):
     """A user with this email is already in the database."""
 
 
-def create_owner(db: Session, *, email: str, full_name: str | None, password: str) -> User:
+def create_owner(
+    db: Session, *, email: str, full_name: str | None, password: str
+) -> User:
     """Insert a superuser. Raises OwnerExistsError if the email is taken, or
     pydantic's ValidationError if the email or password is unacceptable."""
     # Reuse the API's own rules (valid email, 8-72 character password).
@@ -82,9 +84,14 @@ def main(argv: list[str] | None = None) -> int:
 
     db = SessionLocal()
     try:
-        user = create_owner(db, email=args.email, full_name=args.name, password=password)
+        user = create_owner(
+            db, email=args.email, full_name=args.name, password=password
+        )
     except OwnerExistsError:
-        print(f"A user with email {args.email} already exists; nothing changed.", file=sys.stderr)
+        print(
+            f"A user with email {args.email} already exists; nothing changed.",
+            file=sys.stderr,
+        )
         return 1
     except ValidationError as e:
         print(f"Invalid input: {e.errors()[0]['msg']}", file=sys.stderr)

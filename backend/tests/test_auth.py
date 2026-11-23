@@ -42,7 +42,9 @@ def alice(db_session):
 
 
 def _login(client, email, password):
-    return client.post("/api/v1/auth/login", data={"username": email, "password": password})
+    return client.post(
+        "/api/v1/auth/login", data={"username": email, "password": password}
+    )
 
 
 # --- register: superuser only -------------------------------------------------
@@ -57,11 +59,16 @@ def test_register_rejects_a_normal_user(client, auth_headers):
     r = client.post("/api/v1/auth/register", json=USER_PAYLOAD, headers=auth_headers)
     assert r.status_code == 403
     # And it must not have created the account.
-    assert _login(client, USER_PAYLOAD["email"], USER_PAYLOAD["password"]).status_code == 401
+    assert (
+        _login(client, USER_PAYLOAD["email"], USER_PAYLOAD["password"]).status_code
+        == 401
+    )
 
 
 def test_register_creates_user_for_a_superuser(client, superuser_headers):
-    r = client.post("/api/v1/auth/register", json=USER_PAYLOAD, headers=superuser_headers)
+    r = client.post(
+        "/api/v1/auth/register", json=USER_PAYLOAD, headers=superuser_headers
+    )
     assert r.status_code == 201
     body = r.json()
     assert body["email"] == USER_PAYLOAD["email"]
@@ -79,7 +86,9 @@ def test_registered_user_can_log_in(client, superuser_headers):
 
 def test_register_rejects_duplicate_email(client, superuser_headers):
     client.post("/api/v1/auth/register", json=USER_PAYLOAD, headers=superuser_headers)
-    r = client.post("/api/v1/auth/register", json=USER_PAYLOAD, headers=superuser_headers)
+    r = client.post(
+        "/api/v1/auth/register", json=USER_PAYLOAD, headers=superuser_headers
+    )
     assert r.status_code == 409
 
 
@@ -105,7 +114,9 @@ def test_me_requires_token(client):
 
 
 def test_me_with_valid_token(client, alice):
-    token = _login(client, USER_PAYLOAD["email"], USER_PAYLOAD["password"]).json()["access_token"]
+    token = _login(client, USER_PAYLOAD["email"], USER_PAYLOAD["password"]).json()[
+        "access_token"
+    ]
     r = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     assert r.json()["email"] == USER_PAYLOAD["email"]
