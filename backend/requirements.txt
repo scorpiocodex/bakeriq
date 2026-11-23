@@ -20,6 +20,7 @@ python-multipart==0.0.34
 # External services
 twilio==9.3.7
 celery[redis]==5.4.0
+kombu==5.6.2  # 5.7.0 needs redis-py 6.1+, which celery 5.4.0 does not allow
 ollama==0.4.4
 
 # Async HTTP for the dev-only /web reverse proxy
