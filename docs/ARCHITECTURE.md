@@ -155,7 +155,7 @@ Note that `.env` changes need `docker compose up -d --force-recreate`, not `rest
 
 ### Tests
 
-`backend/tests/` — pytest. Tests use a separate `db_test` database container (port 5433) so they never touch dev data. **396 tests pass** (run inside the `api` container, 23 November 2026).
+`backend/tests/` — pytest. Tests use a separate `db_test` database container (port 5433) so they never touch dev data. **418 tests pass** (run inside the `api` container, 23 November 2026).
 
 Test conventions:
 

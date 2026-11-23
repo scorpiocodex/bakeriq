@@ -54,7 +54,7 @@ make test         # Full backend suite, verbose
 make test-fast    # Same suite, stop at the first failure (-x)
 ```
 
-Tests run inside the api container against the `db_test` database on port 5433. Your dev data on port 5432 is untouched. **396 tests, all passing** (run in the Docker stack on 23 November 2026, about 85 seconds). There is no coverage tooling configured.
+Tests run inside the api container against the `db_test` database on port 5433. Your dev data on port 5432 is untouched. **418 tests, all passing** (run in the Docker stack on 23 November 2026, about 85 seconds). There is no coverage tooling configured.
 
 To run a single test or module:
 
