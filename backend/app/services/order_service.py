@@ -251,8 +251,14 @@ def delete_order(db: Session, order_id: UUID) -> None:
 
     Note: we generally prefer cancelling over deleting (cancel keeps the
     record). Delete is here for genuine mistakes — a test order, a duplicate.
+
+    Stock the order held goes back, as it does on cancel. A cancelled order
+    already gave its stock back, so it must not do so a second time (drafts
+    never deducted, and restore_for_order skips them).
     """
     order = get_order(db, order_id)
+    if order.status != OrderStatus.cancelled:
+        inventory_service.restore_for_order(db, order)
     db.delete(order)
     db.commit()
 

@@ -23,7 +23,7 @@ from uuid import uuid4
 import pytest
 from app.models.category import Category
 from app.models.customer import Customer
-from app.models.order import Order, OrderStatus
+from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product
 from app.schemas.order import OrderCreate, OrderItemWrite, OrderUpdate
 from app.services import inventory_service, order_service
@@ -261,6 +261,80 @@ class TestStockOnEdit:
         )
         db_session.refresh(stocked)
         assert stocked.stock_quantity == 17
+
+
+class TestStockOnDelete:
+    """Deleting an order is for mistakes and duplicates. It has to give the
+    stock back like a cancel does, or the count drifts down for good."""
+
+    def test_deleting_restores(self, db_session, customer, stocked):
+        order = _place(db_session, customer, [(stocked, 3)])
+        db_session.refresh(stocked)
+        assert stocked.stock_quantity == 17
+
+        order_service.delete_order(db_session, order.id)
+        db_session.refresh(stocked)
+        assert stocked.stock_quantity == 20
+
+    def test_deleting_a_cancelled_order_restores_nothing_more(
+        self, db_session, customer, stocked
+    ):
+        """Cancelling already gave the stock back; deleting afterwards must
+        not give it back a second time."""
+        order = _place(db_session, customer, [(stocked, 3)])
+        order_service.change_status(db_session, order.id, OrderStatus.cancelled)
+        order_service.delete_order(db_session, order.id)
+
+        db_session.refresh(stocked)
+        assert stocked.stock_quantity == 20
+
+    def test_deleting_a_draft_restores_nothing(self, db_session, customer, stocked):
+        """A cart in progress never deducted, so there is nothing to return."""
+        draft = Order(
+            customer_id=customer.id,
+            is_draft=True,
+            order_date=TODAY,
+            total_amount=Decimal("45.00"),
+        )
+        db_session.add(draft)
+        db_session.flush()
+        db_session.add(
+            OrderItem(
+                order_id=draft.id,
+                product_id=stocked.id,
+                product_name=stocked.name,
+                unit_price=stocked.unit_price,
+                unit_label=stocked.unit_label,
+                quantity=3,
+                subtotal=Decimal("45.00"),
+            )
+        )
+        db_session.commit()
+
+        order_service.delete_order(db_session, draft.id)
+        db_session.refresh(stocked)
+        assert stocked.stock_quantity == 20
+
+    def test_delete_endpoint_restores(
+        self, client: TestClient, auth_headers, db_session, customer, stocked
+    ):
+        order = _place(db_session, customer, [(stocked, 4)])
+        r = client.delete(f"/api/v1/orders/{order.id}", headers=auth_headers)
+        assert r.status_code == 204
+
+        db_session.refresh(stocked)
+        assert stocked.stock_quantity == 20
+
+    def test_deleting_a_mixed_order_only_touches_stockable(
+        self, db_session, customer, stocked, made_to_order
+    ):
+        order = _place(db_session, customer, [(stocked, 2), (made_to_order, 4)])
+        order_service.delete_order(db_session, order.id)
+
+        db_session.refresh(stocked)
+        db_session.refresh(made_to_order)
+        assert stocked.stock_quantity == 20
+        assert made_to_order.stock_quantity is None
 
 
 # ============================================================
