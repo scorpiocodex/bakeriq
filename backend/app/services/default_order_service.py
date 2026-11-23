@@ -54,12 +54,12 @@ def _validate_products(db: Session, items: list) -> None:
         product = found_by_id.get(pid)
         if product is None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Product with id {pid} does not exist",
             )
         if not product.is_active:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Product '{product.name}' is inactive and can't be added to a default order",
             )
 

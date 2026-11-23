@@ -56,7 +56,7 @@ def _validate_transition(current: OrderStatus, target: OrderStatus) -> None:
         return
     if current == OrderStatus.cancelled:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="A cancelled order cannot be reactivated. Create a new order.",
         )
     # Both are in the forward chain — allow any move within it. (We chose
@@ -87,7 +87,7 @@ def _build_items(
     """
     if not item_writes:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="An order must have at least one item",
         )
 
@@ -101,12 +101,12 @@ def _build_items(
         product = by_id.get(iw.product_id)
         if product is None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Product with id {iw.product_id} does not exist",
             )
         if not product.is_active:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Product '{product.name}' is inactive and can't be ordered",
             )
         # Snapshot

@@ -408,6 +408,16 @@ The semantics differ too: cart tokens are customer-bound with a 30-minute expiry
 
 **What it costs:** PyJWT publishes security fixes too, so the pin needs to keep moving (Dependabot watches it). PyJWT is stricter in one way that matters here: it rejects a token whose `sub` is not a string (`InvalidSubjectError`); the app already sends `str(subject)`, and a test covers the other refusals (expired, tampered, wrong key, `alg: none`, a different HMAC algorithm).
 
+## ADR-30 — FastAPI 0.165 on Starlette 1.10, with Starlette pinned explicitly
+
+**Context:** the app was on FastAPI 0.115.0, which pins Starlette below 0.39. On 23 November 2026 `pip-audit` reported 14 advisories against Starlette 0.38.6, with fixes only in 0.40 and later (the newest in 1.3.1). Dependabot never showed them, because Starlette was not in `requirements.txt`: it arrived through FastAPI. The base image's bundled `setuptools` (79.0.1, three advisories) was in the same position.
+
+**Decision:** move to FastAPI 0.165.0, which requires Starlette 1.6 or later, and pin `starlette==1.10.0` as its own line so that Dependabot can see and update it from now on. The Dockerfile upgrades `setuptools` along with `pip`. The code needed one change: `status.HTTP_422_UNPROCESSABLE_ENTITY` is deprecated in favour of `HTTP_422_UNPROCESSABLE_CONTENT`, which is the same 422, so all nine uses were renamed.
+
+**What was checked:** the full suite (395 passed, one warning) and, because the test client is not the real server, the new image under real uvicorn against the dev database: login through the form parser, 401 and 422 responses, CORS preflight, the unsigned-webhook guard (403) and both dev proxies. The OpenAPI schema has the same 50 operations and 62 schemas; the only differences are five generated fields (for example `format: password` on the login form and `input`/`ctx` on validation errors).
+
+**What it costs:** a large jump across Starlette's 1.0 line, so the next upgrade deserves the same smoke test. Starlette's `TestClient` now prefers `httpx2` and warns when used with `httpx`; that is the one remaining test warning, and `httpx` still works, so it was left alone. FastAPI now also depends on `opentelemetry-api`, which appears in the image.
+
 ---
 
 ## Adding new decisions

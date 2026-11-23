@@ -20,7 +20,7 @@ The system is single-tenant by design (one bakery, one owner, one chef) and Indi
 
 ## Tech stack
 
-**Backend:** FastAPI 0.115 · Python 3.11 · SQLAlchemy 2.0 · Alembic 1.13 · PostgreSQL 15 · Redis 7 · Celery 5.4 · JWT auth (PyJWT + bcrypt)
+**Backend:** FastAPI 0.165 · Python 3.11 · SQLAlchemy 2.0 · Alembic 1.13 · PostgreSQL 15 · Redis 7 · Celery 5.4 · JWT auth (PyJWT + bcrypt)
 **Messaging and LLM:** Twilio WhatsApp (Python SDK 9.3, Content Templates for tappable buttons) · Ollama running `llama3.2:3b` on the host
 **Frontends (two):** React 18 · Vite 5 · TailwindCSS 3 · TanStack Query v5 · react-router-dom v6 · axios · lucide-react — an owner dashboard (`frontend/`) and a token-authenticated customer web app (`frontend-customer/`)
 **Infrastructure:** Docker Compose orchestrating db / db_test / redis / api / worker / frontend / frontend-customer; ngrok tunnel for Twilio's webhook in development

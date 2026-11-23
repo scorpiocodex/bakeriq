@@ -26,12 +26,12 @@ def _validate_category_exists(db: Session, category_id: UUID) -> None:
     category = db.get(Category, category_id)
     if category is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Category with id {category_id} does not exist",
         )
     if not category.is_active:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"Category '{category.name}' is inactive. "
                 "Reactivate it or pick a different category."
