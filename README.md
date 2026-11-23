@@ -61,7 +61,7 @@ Then open:
 |---|---|
 | `owner@bakeriq.com` | `bakeriqowner` |
 
-The seed script refuses to run unless `ENVIRONMENT` is a development value, so this published password is never planted elsewhere. For a database that wasn't seeded, create the first account with `docker compose exec -it api python -m scripts.create_owner --email you@example.com --name "Your Name"`. After that, a superuser creates further accounts through `POST /api/v1/auth/register`, which is not open to the public.
+The seed script refuses to run unless `ENVIRONMENT` is a development value. That is a safety net for a deployment that sets `ENVIRONMENT` (the default is `development`), not a guarantee, so never run the seed against a real database. For a database that wasn't seeded, create the first account with `docker compose exec -it api python -m scripts.create_owner --email you@example.com --name "Your Name"`. After that, a superuser creates further accounts through `POST /api/v1/auth/register`, which is not open to the public.
 
 That gets the dashboard and API running. The WhatsApp side additionally needs a Twilio sandbox, an ngrok tunnel and a local Ollama — the full walkthrough, including troubleshooting, is in [`docs/SETUP.md`](docs/SETUP.md).
 
