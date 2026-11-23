@@ -8,7 +8,7 @@ you to the REST API for template management:
     https://www.twilio.com/docs/content/content-api-resources
     https://www.twilio.com/en-us/blog/get-started-with-content-api
 
-This module wraps that REST surface using httpx (already in our stack),
+This module wraps that REST surface using httpx2,
 covering the operations BakeriQ needs:
 
 * create_quick_reply         — twilio/quick-reply, used for greeting + fallback
@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterator
 
-import httpx
+import httpx2
 
 from app.core.config import settings
 
@@ -83,8 +83,8 @@ class TwilioContentClient:
     settings), or pass them explicitly with a custom `http_client` for
     tests:
 
-        transport = httpx.MockTransport(handler)
-        with httpx.Client(transport=transport) as http:
+        transport = httpx2.MockTransport(handler)
+        with httpx2.Client(transport=transport) as http:
             client = TwilioContentClient(
                 account_sid="ACtest", auth_token="t", http_client=http,
             )
@@ -96,11 +96,11 @@ class TwilioContentClient:
         *,
         account_sid: str,
         auth_token: str,
-        http_client: httpx.Client | None = None,
+        http_client: httpx2.Client | None = None,
     ) -> None:
         self._auth: tuple[str, str] = (account_sid, auth_token)
         if http_client is None:
-            self._http = httpx.Client(timeout=DEFAULT_TIMEOUT_SECONDS)
+            self._http = httpx2.Client(timeout=DEFAULT_TIMEOUT_SECONDS)
             self._owns_http = True
         else:
             self._http = http_client

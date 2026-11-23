@@ -203,7 +203,7 @@ The task runs a two-stage parse:
 
 The split matters. The parser extracts *everything the customer named*, including off-menu items, and the matcher decides what's available. An earlier version had the LLM filter off-menu items itself, which erased the signal needed to tell a customer "we don't have that today" — the `nothing_available` branch became unreachable, and a message mixing on- and off-menu items sometimes returned nothing at all.
 
-Retries cover both Ollama SDK errors and `httpx` connection failures. When they exhaust, a `MaxRetriesExceededError` handler sends a degraded-service message, so the customer is never left in silence.
+Retries cover both Ollama SDK errors and the `httpx` connection failures the SDK raises (the app's own calls use `httpx2`; see ADR-31). When they exhaust, a `MaxRetriesExceededError` handler sends a degraded-service message, so the customer is never left in silence.
 
 ### Outbound: Reply and Content Templates
 

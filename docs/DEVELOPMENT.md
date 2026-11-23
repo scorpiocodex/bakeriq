@@ -177,9 +177,9 @@ The script is idempotent — it skips templates that already exist and writes SI
 
 ```bash
 docker compose exec api python -c "
-import httpx
+import httpx2
 from app.core.config import settings
-r = httpx.delete(
+r = httpx2.delete(
     'https://content.twilio.com/v1/Content/HX_the_sid_here',
     auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN),
 )

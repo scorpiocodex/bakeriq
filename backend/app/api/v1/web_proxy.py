@@ -33,7 +33,7 @@ accessing each app directly on its own port. Through the proxy you'd
 need to manually reload. Acceptable trade for dev simplicity.
 """
 
-import httpx
+import httpx2
 from fastapi import APIRouter, Request, Response
 
 router = APIRouter(tags=["web-proxy"])
@@ -45,7 +45,7 @@ DASHBOARD_DEV_TARGET = "http://frontend:5173"
 
 # Headers we strip when forwarding — these are connection-level and would
 # confuse the dev server or break streaming. We also strip 'host' because
-# httpx sets it from the URL; otherwise we'd send the original request's
+# httpx2 sets it from the URL; otherwise we'd send the original request's
 # host (localhost:8000) to the upstream and confuse Vite's host checks.
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -74,7 +74,7 @@ async def _proxy(request: Request, target_base: str) -> Response:
 
     body = await request.body()
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx2.AsyncClient(timeout=30.0) as client:
         upstream = await client.request(
             method=request.method,
             url=target,

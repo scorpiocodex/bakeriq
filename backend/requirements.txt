@@ -24,7 +24,8 @@ kombu==5.6.2  # 5.7.0 needs redis-py 6.1+, which celery 5.4.0 does not allow
 ollama==0.4.4
 
 # Async HTTP for the dev-only /web reverse proxy
-httpx==0.27.2
+httpx==0.27.2  # kept only for the Ollama SDK (ollama 0.4.4 needs httpx<0.28); our own code uses httpx2
+httpx2==2.16.2
 
 # Testing
 pytest==9.2.0
